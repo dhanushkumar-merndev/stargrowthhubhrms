@@ -1,0 +1,16 @@
+{
+  "name": "web-hrms",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.17.0",
+  "scripts": {
+    "dev:web": "pnpm --filter @web-hrms/web dev",
+    "dev:server": "cargo run -p hrms-server",
+    "build:web": "pnpm --filter @web-hrms/web build",
+    "build:server": "cargo build -p hrms-server --release",
+    "lint": "pnpm --filter @web-hrms/web lint && cargo clippy --all-targets -- -D warnings",
+    "typecheck": "pnpm --filter @web-hrms/web typecheck",
+    "test": "cargo test",
+    "fmt": "cargo fmt"
+  }
+}

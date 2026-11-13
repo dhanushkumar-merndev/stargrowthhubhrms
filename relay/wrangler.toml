@@ -1,0 +1,14 @@
+# Cloudflare Worker that forwards the eSSL machine's plain-HTTP traffic to the
+# Rust API on Render (PLAN.md K6). No custom domain: it runs on workers.dev.
+#   pnpm --filter @web-hrms/relay run deploy
+# Machine: COMM → Cloud Server → ADMS, domain ON, server hrms-device.<account>.workers.dev, port 80.
+name = "hrms-device"
+main = "src/index.js"
+compatibility_date = "2025-10-01"
+workers_dev = true
+preview_urls = false
+
+[vars]
+API_ORIGIN = "https://web-hrms-api.onrender.com"
+
+# Secret (not here): npx wrangler secret put DEVICE_RELAY_SECRET   (same value as on Render)

@@ -1,0 +1,21 @@
+# Render Blueprint (PLAN.md §8). Free web service, image built by GitHub Actions.
+# Render dashboard → New → Blueprint → this repo. Then fill the secrets marked sync:false.
+services:
+  - type: web
+    name: web-hrms-api
+    runtime: image
+    plan: free
+    region: singapore # closest free region to India
+    image:
+      url: ghcr.io/OWNER/web-hrms-server:latest # replace OWNER with your GitHub user
+    healthCheckPath: /healthz
+    autoDeploy: false # deployed by the deploy hook in .github/workflows/server-image.yml
+    envVars:
+      - key: APP_ORIGIN
+        sync: false # https://<project>.vercel.app
+      - key: PROXY_SECRET
+        sync: false
+      - key: RUST_LOG
+        value: info,tower_http=info
+      - key: LOG_FORMAT
+        value: json

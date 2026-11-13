@@ -1,0 +1,6 @@
+packages:
+  - web
+  - relay
+allowBuilds:
+  sharp: false
+  unrs-resolver: false

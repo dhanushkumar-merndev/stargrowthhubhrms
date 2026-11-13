@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+/* Design tokens copied from hrms/lib/app/theme.dart (AppColors / AppSpacing).
+   Change them there and here together: the PWA must look like the Android app. */
+@theme {
+  --font-sans: Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+
+  --color-background: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-text: #263342;
+  --color-text-secondary: #596678;
+  --color-primary: #4b59c7;
+  --color-border: #e3e7ed;
+
+  --color-attendance-card: #dfe3ff;
+  --color-attendance-action: #4b59c7;
+  --color-leave-card: #e3f9fb;
+  --color-leave-action: #007c89;
+  --color-salary-card: #fff0dd;
+  --color-salary-action: #a94b00;
+  --color-people-card: #ffe5ef;
+  --color-people-action: #ae275b;
+  --color-approvals-card: #d8f6f0;
+  --color-approvals-action: #007768;
+  --color-documents-card: #e8f4fb;
+  --color-documents-action: #1d5f8a;
+  --color-workspace-card: #ede7f6;
+  --color-workspace-action: #5b3e9e;
+
+  --color-error: #b42318;
+  --color-error-soft: #fdecea;
+  --color-warning: #8a5700;
+  --color-warning-soft: #fff4d6;
+  --color-success: #287a35;
+  --color-success-soft: #e6f4e8;
+  --color-exception-strip: #fdedee;
+  --color-shift-badge: #ffe0b8;
+  --color-holiday-card: #f7edfa;
+  --color-holiday-text: #7b2c8f;
+
+  /* AppSpacing (4/8/12/16/24/32) maps to Tailwind's default 1/2/3/4/6/8 scale. */
+  --spacing-page: 16px;
+  --spacing-card: 20px;
+  --spacing-icon-tile: 52px;
+  --radius-card: 20px;
+  --radius-row: 16px;
+  --radius-button: 14px;
+  --radius-input: 12px;
+
+  /* TextTheme */
+  --text-headline-md: 26px;
+  --text-headline-sm: 24px;
+  --text-title-lg: 22px;
+  --text-title-md: 18px;
+  --text-title-sm: 16px;
+  --text-body-lg: 16px;
+  --text-body-md: 14px;
+  --text-body-sm: 13px;
+}
+
+:root {
+  color-scheme: light; /* dark mode deferred, as in the Android app */
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent; /* NoSplash: no grey press overlay */
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.4;
+  min-height: 100dvh;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

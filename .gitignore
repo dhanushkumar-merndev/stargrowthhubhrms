@@ -1,0 +1,36 @@
+# --- secrets: every .env file except the template ---
+.env*
+!.env.example
+*.pem
+*.key
+
+# --- Rust ---
+/target/
+**/*.rs.bk
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+.vercel/
+npm-debug.log*
+.pnpm-debug.log*
+
+# --- Cloudflare ---
+.wrangler/
+.dev.vars
+
+# --- local data (real employee data must never be committed) ---
+/backups/
+*.sql.gz
+*.dump
+
+# --- editors / OS ---
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
