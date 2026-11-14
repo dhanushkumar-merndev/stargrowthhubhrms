@@ -49,7 +49,7 @@ import { useLive, type Conn } from "@/lib/live";
 import { caps } from "@/lib/roles";
 import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
-import { Banner, Button, EmptyState, ErrorState, LoadingState, PageTitle, SectionCard, StatusChip, TextField, cx } from "../ui";
+import { Banner, Button, EmptyState, ErrorState, LoadingState, PageTitle, SectionCard, Sheet, StatusChip, TextField, cx } from "../ui";
 
 
 const msg = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
@@ -268,22 +268,6 @@ function Scans({ employeeId, date, row, tz }: { employeeId: string; date: string
           {row.device_out_at && ` (machine check-out was ${clock(row.device_out_at, tz)})`}
         </p>
       )}
-    </div>
-  );
-}
-
-function Sheet({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center">
-      <div className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-t-[24px] bg-surface p-6 sm:rounded-[24px]">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-title-md font-semibold">{title}</h2>
-          <Button variant="text" onClick={onClose} aria-label="Close">
-            Close
-          </Button>
-        </div>
-        {children}
-      </div>
     </div>
   );
 }

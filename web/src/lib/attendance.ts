@@ -124,6 +124,7 @@ export function clock(iso: string | null | undefined, timeZone: string): string 
 export function dayLabel(ymd: string): string {
   const [y, m, d] = ymd.split("-").map(Number);
   const date = new Date(Date.UTC(y, m - 1, d));
+  if (Number.isNaN(date.getTime())) return "";
   return new Intl.DateTimeFormat("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" }).format(date);
 }
 

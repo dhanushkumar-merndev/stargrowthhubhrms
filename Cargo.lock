@@ -681,6 +681,7 @@ dependencies = [
  "base64",
  "chrono",
  "dotenvy",
+ "futures-util",
  "hmac",
  "http-body-util",
  "p256",

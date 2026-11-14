@@ -68,6 +68,8 @@ describe("formatting", () => {
   it("calendar labels never shift by timezone", () => {
     expect(dayLabel("2026-11-14")).toMatch(/Sat.*14.*Nov/);
     expect(dayLabel("2026-01-01")).toMatch(/Thu.*1.*Jan/);
+    expect(dayLabel("")).toBe("");
+    expect(dayLabel("garbage")).toBe("");
   });
 
   it("month ranges, including year ends and leap years", () => {

@@ -340,3 +340,119 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
     </div>
   );
 }
+
+/** dialogs.dart: bottom sheet on phones, centred dialog on wider screens. */
+export function Sheet({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={(e) => e.key === "Escape" && onClose()}
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center"
+    >
+      <div className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-t-[24px] bg-surface p-6 sm:rounded-[24px]">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-title-md font-semibold">{title}</h2>
+          <Button variant="text" onClick={onClose} aria-label="Close">
+            Close
+          </Button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** pill_tabs.dart: a row of filter pills. */
+export function PillTabs<K extends string>({
+  tabs,
+  value,
+  onChange,
+  label,
+}: {
+  tabs: readonly { id: K; label: string }[];
+  value: K;
+  onChange: (k: K) => void;
+  label: string;
+}) {
+  return (
+    <div role="tablist" aria-label={label} className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          role="tab"
+          type="button"
+          aria-selected={value === t.id}
+          onClick={() => onChange(t.id)}
+          className={cx(
+            "min-h-10 shrink-0 rounded-[20px] px-4 text-body-md font-semibold",
+            value === t.id ? "bg-primary text-white" : "border border-border bg-surface text-text",
+          )}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** A multi-line text field with the same label/error layout as TextField. */
+export function TextArea({
+  label,
+  value,
+  onChange,
+  error,
+  hint,
+  rows = 4,
+  maxLength = 500,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  error?: string | null;
+  hint?: string;
+  rows?: number;
+  maxLength?: number;
+}) {
+  const id = useId();
+  return (
+    <div>
+      <label htmlFor={id} className="mb-1.5 block text-body-md font-medium text-text-secondary">
+        {label}
+      </label>
+      <textarea
+        id={id}
+        value={value}
+        maxLength={maxLength}
+        rows={rows}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-err` : hint ? `${id}-hint` : undefined}
+        className={cx(
+          "w-full rounded-input border bg-surface px-4 py-3 text-body-lg outline-none focus:outline-[1.6px] focus:outline-primary",
+          error ? "border-error" : "border-border",
+        )}
+      />
+      {error ? (
+        <p id={`${id}-err`} className="mt-1 text-body-sm text-error">
+          {error}
+        </p>
+      ) : hint ? (
+        <p id={`${id}-hint`} className="mt-1 text-body-sm text-text-secondary">
+          {hint}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** cards.dart KeyValueRow. */
+export function KeyValue({ k, v }: { k: string; v: ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-1.5">
+      <span className="text-body-md text-text-secondary">{k}</span>
+      <span className="text-right text-body-md font-medium text-text">{v}</span>
+    </div>
+  );
+}
