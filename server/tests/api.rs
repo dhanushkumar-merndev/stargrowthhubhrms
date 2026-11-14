@@ -2841,3 +2841,433 @@ async fn notification_prefs_quiet_hours_and_push_outbox() {
     let r = t.rpc("list_notifications", json!({}), &emp).await;
     assert_eq!(r.body["data"]["unread"], 0);
 }
+
+#[tokio::test]
+async fn calendar_feed_is_private_revocable_and_valid_ics() {
+    let Some(t) = setup().await else {
+        eprintln!("SKIP: HRMS_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = t.admin().await;
+    let (asha, emp) = t.employee(&admin, "C001").await;
+    let (other, _) = t.employee(&admin, "C002").await;
+    let (org, _, _, office) = t.org_ids().await;
+    let today: chrono::NaiveDate = sqlx::query_scalar("select (now() at time zone 'Asia/Kolkata')::date")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    let d = |n: i64| today + chrono::Duration::days(n);
+    let other_office: Uuid = sqlx::query_scalar(
+        "insert into hrms.offices (org_id, name, timezone, location)
+         values ($1, 'Branch', 'Asia/Kolkata', 'SRID=4326;POINT(77.7 13.0)'::extensions.geography) returning id",
+    )
+    .bind(org)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    for (date, name, state, office_id) in [
+        (d(10), "Founders, Day; \"one\"", "published", None),
+        (d(11), "Draft day", "draft", None),
+        (d(12), "HQ day", "published", Some(office)),
+        (d(13), "Branch day", "published", Some(other_office)),
+        (d(500), "Too far", "published", None),
+    ] {
+        sqlx::query("insert into hrms.holidays (org_id, office_id, holiday_date, name, state) values ($1, $2, $3, $4, $5)")
+            .bind(org)
+            .bind(office_id)
+            .bind(date)
+            .bind(name)
+            .bind(state)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("insert into hrms.leave_types (org_id, code, name) values ($1, 'CL', 'Casual leave') on conflict do nothing")
+        .bind(org)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    // Approved leave for Asha (one half day) and for someone else.
+    for (who, slot, state) in [(asha, "AM", "approved"), (asha, "FULL", "released"), (other, "FULL", "approved")] {
+        let day = if state == "released" { d(21) } else { d(20) };
+        sqlx::query(
+            "with r as (
+               insert into hrms.requests (org_id, employee_id, kind, state, leave_type_id, start_date, end_date)
+               values ($1, $2, 'leave', 'approved', (select id from hrms.leave_types where org_id = $1 and code = 'CL'), $3, $3)
+               returning id)
+             insert into hrms.leave_day_slots (org_id, employee_id, request_id, revision_no, day, slot, slot_range, state)
+             select $1, $2, r.id, 1, $3, $4, hrms.slot_range($4), $5 from r",
+        )
+        .bind(org)
+        .bind(who)
+        .bind(day)
+        .bind(slot)
+        .bind(state)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    }
+
+    let r = t.rpc("get_calendar_feed", json!({}), &emp).await;
+    assert_eq!(r.body["data"]["enabled"], json!(false), "{}", r.body);
+    let r = t.rpc("create_calendar_feed", json!({}), &emp).await;
+    let token = r.body["data"]["token"].as_str().unwrap().to_owned();
+    assert_eq!(token.len(), 43, "{}", r.body);
+    let stored: Vec<u8> = sqlx::query_scalar("select token_hash from hrms.calendar_feeds where employee_id = $1")
+        .bind(asha)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_ne!(stored, token.as_bytes(), "only the hash is stored");
+    let r = t.rpc("get_calendar_feed", json!({}), &emp).await;
+    assert_eq!(r.body["data"]["enabled"], json!(true));
+    assert!(r.body["data"].get("token").is_none(), "token is shown only once");
+
+    // No cookie needed; still only through the proxy.
+    let get = |path: String| {
+        let t = &t;
+        async move {
+            let req = t.base(Method::GET, &path).body(Body::empty()).unwrap();
+            let res = t.app.clone().oneshot(req).await.unwrap();
+            let (st, h) = (res.status(), res.headers().clone());
+            let b = res.into_body().collect().await.unwrap().to_bytes().to_vec();
+            (st, h, String::from_utf8(b).unwrap())
+        }
+    };
+    let (st, h, ics) = get(format!("/v1/calendar/{token}.ics")).await;
+    assert_eq!(st, StatusCode::OK, "{ics}");
+    assert_eq!(h[header::CONTENT_TYPE], "text/calendar; charset=utf-8");
+    assert_eq!(h[header::CACHE_CONTROL], "private, max-age=900");
+    assert!(ics.starts_with("BEGIN:VCALENDAR\r\n") && ics.ends_with("END:VCALENDAR\r\n"));
+    assert!(ics.contains(r#"SUMMARY:Founders\, Day\; "one""#), "{ics}");
+    assert!(ics.contains("SUMMARY:HQ day"));
+    assert!(!ics.contains("Branch day"), "another office's holiday");
+    assert!(!ics.contains("Draft day") && !ics.contains("Too far"));
+    assert_eq!(ics.matches("SUMMARY:On leave:").count(), 1, "{ics}");
+    assert!(ics.contains("SUMMARY:On leave: Casual leave (morning)"), "{ics}");
+    assert!(ics.contains(&format!("DTSTART;VALUE=DATE:{}", d(20).format("%Y%m%d"))));
+    let used: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("select last_used_at from hrms.calendar_feeds where employee_id = $1")
+        .bind(asha)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert!(used.is_some());
+
+    // Wrong shapes and unknown tokens look the same.
+    for bad in [
+        format!("/v1/calendar/{token}"),
+        format!("/v1/calendar/{token}.ICS"),
+        format!("/v1/calendar/{}.ics", "A".repeat(43)),
+        "/v1/calendar/short.ics".to_string(),
+        format!("/v1/calendar/{}x.ics", &token[..42]),
+    ] {
+        let (st, _, _) = get(bad.clone()).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{bad}");
+    }
+    // Not reachable without the proxy secret.
+    let req = Request::builder()
+        .uri(format!("/v1/calendar/{token}.ics"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(t.app.clone().oneshot(req).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+    // A new link replaces the old one.
+    let r = t.rpc("create_calendar_feed", json!({}), &emp).await;
+    let token2 = r.body["data"]["token"].as_str().unwrap().to_owned();
+    assert_ne!(token, token2);
+    assert_eq!(get(format!("/v1/calendar/{token}.ics")).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(get(format!("/v1/calendar/{token2}.ics")).await.0, StatusCode::OK);
+
+    // Deactivation stops it; reactivation brings it back.
+    sqlx::query("update hrms.employees set status = 'inactive' where id = $1").bind(asha).execute(&t.pool).await.unwrap();
+    assert_eq!(get(format!("/v1/calendar/{token2}.ics")).await.0, StatusCode::NOT_FOUND);
+    sqlx::query("update hrms.employees set status = 'active' where id = $1").bind(asha).execute(&t.pool).await.unwrap();
+    assert_eq!(get(format!("/v1/calendar/{token2}.ics")).await.0, StatusCode::OK);
+
+    // Deactivation signed Asha out; sign in again.
+    let r = t.login("C001", NEW_PW).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let emp = r.session_cookie().unwrap();
+    // Turning it off revokes at once and is idempotent; both are audited.
+    for _ in 0..2 {
+        let r = t.rpc("revoke_calendar_feed", json!({}), &emp).await;
+        assert_eq!(r.body["data"]["enabled"], json!(false), "{}", r.body);
+    }
+    assert_eq!(get(format!("/v1/calendar/{token2}.ics")).await.0, StatusCode::NOT_FOUND);
+    let audits: i64 = sqlx::query_scalar("select count(*) from hrms.audit_logs where target_id = $1 and action like 'calendar_feed.%'")
+        .bind(asha)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(audits, 3, "two creates and one revoke");
+
+    // The internal function is not callable from the browser.
+    let r = t.rpc("internal_calendar_feed", json!({ "p_token_sha256": "00" }), &emp).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
+}
+
+#[tokio::test]
+async fn celebrations_respect_opt_in_and_never_leak_birth_year() {
+    let Some(t) = setup().await else {
+        eprintln!("SKIP: HRMS_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = t.admin().await;
+    let (asha, emp) = t.employee(&admin, "B001").await;
+    let (ravi, _) = t.employee(&admin, "B002").await;
+    let (gone, _) = t.employee(&admin, "B003").await;
+    let (org, _, _, _) = t.org_ids().await;
+    let today: chrono::NaiveDate = sqlx::query_scalar("select (now() at time zone 'Asia/Kolkata')::date")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    let years_ago = |y: i32, plus_days: i64| {
+        let d = today + chrono::Duration::days(plus_days);
+        chrono::NaiveDate::from_ymd_opt(chrono::Datelike::year(&d) - y, chrono::Datelike::month(&d), chrono::Datelike::day(&d).min(28)).unwrap()
+    };
+    // Join dates: Asha 3 years ago today, Ravi 1 year ago in 2 days, B003 inactive.
+    for (id, join) in [(asha, years_ago(3, 0)), (ravi, years_ago(1, 2)), (gone, years_ago(2, 0))] {
+        sqlx::query("update hrms.employees set join_date = $2 where id = $1").bind(id).bind(join).execute(&t.pool).await.unwrap();
+    }
+    sqlx::query("update hrms.employees set status = 'inactive' where id = $1").bind(gone).execute(&t.pool).await.unwrap();
+    // Birthdays: Asha (today), Ravi (tomorrow).
+    for (id, dob) in [(asha, years_ago(30, 0)), (ravi, years_ago(25, 1))] {
+        sqlx::query(
+            "insert into hrms.employee_private_details (employee_id, org_id, date_of_birth) values ($1, $2, $3)
+             on conflict (employee_id) do update set date_of_birth = excluded.date_of_birth",
+        )
+        .bind(id)
+        .bind(org)
+        .bind(dob)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    }
+
+    let list = |days: i64| {
+        let t = &t;
+        let emp = emp.clone();
+        async move { t.rpc("list_celebrations", json!({ "p_days": days }), &emp).await.body["data"]["rows"].clone() }
+    };
+    let rows = list(7).await;
+    let kinds: Vec<(String, String)> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["name"].as_str().unwrap().to_owned(), r["kind"].as_str().unwrap().to_owned()))
+        .collect();
+    assert_eq!(kinds, vec![("Person B001".into(), "anniversary".into()), ("Person B002".into(), "anniversary".into())], "{rows}");
+    assert_eq!(rows[0]["years"], json!(3));
+    assert_eq!(rows[0]["is_today"], json!(true));
+    assert_eq!(rows[0]["is_me"], json!(true));
+    assert_eq!(rows[1]["years"], json!(1));
+    assert!(!rows.to_string().contains("date_of_birth"));
+
+    // Opt in to birthdays: shows day only, never the birth year.
+    let r = t.rpc("get_celebration_prefs", json!({}), &emp).await;
+    assert_eq!(r.body["data"], json!({ "share_birthday": false, "share_anniversary": true, "has_birthday": true }), "{}", r.body);
+    let r = t.rpc("set_celebration_prefs", json!({ "p_share_birthday": true, "p_share_anniversary": false }), &emp).await;
+    assert_eq!(r.body["data"]["share_birthday"], json!(true), "{}", r.body);
+    let rows = list(7).await;
+    let mine: Vec<&Value> = rows.as_array().unwrap().iter().filter(|r| r["employee_id"] == json!(asha)).collect();
+    assert_eq!(mine.len(), 1, "{rows}");
+    assert_eq!(mine[0]["kind"], json!("birthday"));
+    assert_eq!(mine[0]["years"], Value::Null, "age is never shown");
+    assert_eq!(mine[0]["date"], json!(today.to_string()));
+    let birth_year = years_ago(30, 0).format("%Y").to_string();
+    assert!(!rows.to_string().contains(&format!("{birth_year}-")), "{rows}");
+    // Ravi did not opt in: no birthday for him.
+    assert!(!rows.as_array().unwrap().iter().any(|r| r["employee_id"] == json!(ravi) && r["kind"] == json!("birthday")));
+
+    // Window edges: 0 days = today only; out-of-range values are clamped.
+    assert!(list(0).await.as_array().unwrap().iter().all(|r| r["is_today"] == json!(true)));
+    assert_eq!(list(-5).await, list(0).await);
+    assert!(t.rpc("list_celebrations", json!({ "p_days": 400 }), &emp).await.status.is_success());
+
+    // Validation.
+    let r = t.rpc("set_celebration_prefs", json!({ "p_share_birthday": null, "p_share_anniversary": true }), &emp).await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+
+    // Leap-day birthdays fall on 28 February in other years.
+    let leap: chrono::NaiveDate = sqlx::query_scalar("select hrms.next_yearly('2000-02-29', '2027-01-10')")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(leap.to_string(), "2027-02-28");
+    let leap: chrono::NaiveDate = sqlx::query_scalar("select hrms.next_yearly('2000-02-29', '2028-01-10')")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(leap.to_string(), "2028-02-29");
+    let wrap: chrono::NaiveDate = sqlx::query_scalar("select hrms.next_yearly('1990-01-02', '2026-12-30')")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(wrap.to_string(), "2027-01-02");
+}
+
+#[tokio::test]
+async fn comp_off_for_a_day_off_is_reviewed_and_credited_once() {
+    let Some(t) = setup().await else {
+        eprintln!("SKIP: HRMS_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = t.admin().await;
+    let (asha, emp) = t.employee(&admin, "K001").await;
+    let (_, hr) = {
+        let (id, temp) = t.hire(&admin, "K002", Some("hr")).await;
+        let r = t.login("K002", &temp).await;
+        let c = r.session_cookie().unwrap();
+        let r = t.change_password(&c, &temp, NEW_PW).await;
+        (id, r.session_cookie().unwrap())
+    };
+    let (org, _, _, _) = t.org_ids().await;
+    let today: chrono::NaiveDate = sqlx::query_scalar("select (now() at time zone 'Asia/Kolkata')::date")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    let d = |n: i64| today - chrono::Duration::days(n);
+    // Days: 2 ago = day off with 7h, 3 ago = day off with 4h, 4 ago = day off with 2h,
+    // 5 ago = working day with 8h, 40 ago = day off with 8h (too old).
+    sqlx::query("update hrms.employees set join_date = $2 where id = $1").bind(asha).bind(d(60)).execute(&t.pool).await.unwrap();
+    let (_, _, _, office) = t.org_ids().await;
+    for (n, hours, required) in [(2, 7, false), (3, 4, false), (4, 2, false), (5, 8, true), (40, 8, false)] {
+        let inst: Uuid = sqlx::query_scalar(
+            "insert into hrms.work_schedule_instances (org_id, employee_id, shift_date, kind, is_required, office_id,
+               shift_version_id, timezone, start_at, end_at, lunch_paid, grace_seconds, early_entry_seconds, early_credit,
+               checkout_extension_seconds, expected_seconds, half_split_at)
+             select $1, $2, $3, case when $4 then 'workday' else 'weekly_off' end, $4, $5, sv.id, 'Asia/Kolkata',
+                    ($3::date + time '09:00') at time zone 'Asia/Kolkata', ($3::date + time '18:00') at time zone 'Asia/Kolkata',
+                    true, 1800, 1800, false, 7200, 32400, ($3::date + time '13:30') at time zone 'Asia/Kolkata'
+             from hrms.shift_versions sv where sv.org_id = $1 limit 1 returning id",
+        )
+        .bind(org)
+        .bind(asha)
+        .bind(d(n))
+        .bind(required)
+        .bind(office)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into hrms.attendance_sessions (org_id, employee_id, schedule_instance_id, shift_date, state, effective_in_at, effective_out_at, effective_source)
+             values ($1, $2, $3, $4, 'closed', ($4::date + time '09:00') at time zone 'Asia/Kolkata',
+                     ($4::date + time '09:00' + make_interval(hours => $5)) at time zone 'Asia/Kolkata', 'manual')",
+        )
+        .bind(org)
+        .bind(asha)
+        .bind(inst)
+        .bind(d(n))
+        .bind(hours)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    }
+    let save = |day: chrono::NaiveDate, reason: &'static str| {
+        let t = &t;
+        let emp = emp.clone();
+        async move {
+            t.rpc(
+                "save_attendance_request",
+                json!({ "p_kind": "comp_off", "p_request_id": null, "p_start_date": day, "p_end_date": null,
+                        "p_reason": reason, "p_submit": true, "p_expected_version": null, "p_operation_key": Uuid::new_v4() }),
+                &emp,
+            )
+            .await
+        }
+    };
+    // Rejections, each with the field message.
+    for (day, needle) in [
+        (today + chrono::Duration::days(1), "already worked"),
+        (d(40), "within 30 days"),
+        (d(5), "working day"),
+        (d(4), "at least 3 hours"),
+    ] {
+        let r = save(day, "Worked the stock count").await;
+        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{day}: {}", r.body);
+        assert!(r.body["error"]["field_errors"]["start_date"].as_str().unwrap().contains(needle), "{}", r.body);
+    }
+    let r = save(d(2), "no").await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "reason required: {}", r.body);
+
+    // 7 hours -> full day; 4 hours -> half day.
+    let r = save(d(2), "Worked the stock count").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let full: Uuid = r.body["data"]["id"].as_str().unwrap().parse().unwrap();
+    let r = save(d(3), "Client go-live support").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let half: Uuid = r.body["data"]["id"].as_str().unwrap().parse().unwrap();
+    let r = save(d(2), "Again").await;
+    assert!(r.body["error"]["field_errors"]["start_date"].as_str().unwrap().contains("already asked"), "{}", r.body);
+    let units: Vec<i32> = sqlx::query_scalar("select units from hrms.requests where id = any($1) order by target_shift_date desc")
+        .bind(vec![full, half])
+        .fetch_all(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(units, vec![2, 1]);
+    // HR was told.
+    let told: i64 = sqlx::query_scalar("select count(*) from hrms.notifications where title = 'Comp-off request' and body like '%asked for comp-off for working%'")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert!(told >= 1);
+
+    // The requester cannot approve their own; HR opens and approves.
+    let decide = |id: Uuid, cookie: String, decision: &'static str| {
+        let t = &t;
+        async move {
+            let r = t.rpc("open_request_for_review", json!({ "p_request_id": id, "p_reason": null }), &cookie).await;
+            let v = r.body["version"].as_i64().or_else(|| r.body["data"]["version"].as_i64());
+            t.rpc(
+                "decide_request",
+                json!({ "p_request_id": id, "p_decision": decision, "p_reason": "ok", "p_expected_version": v, "p_operation_key": Uuid::new_v4() }),
+                &cookie,
+            )
+            .await
+        }
+    };
+    let r = decide(full, emp.clone(), "approve").await;
+    assert_ne!(r.status, StatusCode::OK, "{}", r.body);
+    let r = decide(full, hr.clone(), "approve").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = decide(half, hr.clone(), "reject").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+
+    // Balance: one full day (2 units) of "Comp off", valid 90 days from the worked day.
+    let (code, units, source, valid_to): (String, i64, String, chrono::NaiveDate) = sqlx::query_as(
+        "select t.code, sum(l.units)::bigint, min(a.source), min(a.valid_to)
+         from hrms.leave_ledger l join hrms.leave_accounts ac on ac.id = l.account_id
+         join hrms.leave_types t on t.id = ac.leave_type_id join hrms.leave_allocations a on a.id = l.allocation_id
+         where ac.employee_id = $1 group by t.code",
+    )
+    .bind(asha)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!((code.as_str(), units, source.as_str()), ("COMP_OFF", 2, "comp_off"));
+    assert!(valid_to <= d(2) + chrono::Duration::days(91));
+    let r = t.rpc("get_leave_balances", json!({}), &emp).await;
+    assert!(r.body.to_string().contains("Comp off"), "{}", r.body);
+    let notice: String = sqlx::query_scalar("select body from hrms.notifications where recipient_id = $1 and kind = 'request.approved' order by created_at desc limit 1")
+        .bind(asha)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert!(notice.contains("added to your leave balance (1 day)"), "{notice}");
+
+    // Crediting twice is impossible (idempotent apply).
+    let req: (Uuid,) = (full,);
+    sqlx::query("select hrms.credit_comp_off(r, (select payload from hrms.request_revisions where request_id = r.id and revision_no = r.current_revision), null) from hrms.requests r where r.id = $1")
+        .bind(req.0)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let n: i64 = sqlx::query_scalar("select count(*) from hrms.leave_ledger where request_id = $1").bind(full).fetch_one(&t.pool).await.unwrap();
+    assert_eq!(n, 1);
+
+    // A rejected day can be asked again; an approved one cannot.
+    let r = save(d(3), "Client go-live support, again").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = save(d(2), "Worked the stock count").await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+}

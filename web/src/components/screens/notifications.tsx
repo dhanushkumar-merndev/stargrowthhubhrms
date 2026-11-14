@@ -158,6 +158,7 @@ export function NotificationSettings({ support: forced }: { support?: PushSuppor
   const support = forced ?? detected;
   const [here, setHere] = useState<boolean | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
   const device = useAction();
   useEffect(() => {
     let live = true;
@@ -236,17 +237,16 @@ export function NotificationSettings({ support: forced }: { support?: PushSuppor
             {q.data && <p className="text-body-sm text-text-secondary">Signed-in devices with notifications: {q.data.devices}</p>}
           </div>
         </SectionCard>
-        {q.error ? <ErrorState message="Could not load your settings." onRetry={() => void q.mutate()} /> : !q.data ? <LoadingState /> : <PrefsForm key={JSON.stringify(q.data)} prefs={q.data} onSaved={async () => void (await q.mutate())} />}
+        {q.error ? <ErrorState message="Could not load your settings." onRetry={() => void q.mutate()} /> : !q.data ? <LoadingState /> : <PrefsForm key={JSON.stringify(q.data)} prefs={q.data} saved={saved} onSaved={async () => { await q.mutate(); setSaved(true); }} onEdit={() => setSaved(false)} />}
       </div>
     </>
   );
 }
 
-function PrefsForm({ prefs, onSaved }: { prefs: Prefs; onSaved: () => Promise<void> }) {
+function PrefsForm({ prefs, saved, onSaved, onEdit }: { prefs: Prefs; saved: boolean; onSaved: () => Promise<void>; onEdit: () => void }) {
   const [muted, setMuted] = useState(new Set(prefs.muted));
   const [start, setStart] = useState(prefs.quiet_start ?? "");
   const [end, setEnd] = useState(prefs.quiet_end ?? "");
-  const [saved, setSaved] = useState(false);
   const a = useAction();
   const quiet = quietErrors(start, end);
   return (
@@ -256,11 +256,10 @@ function PrefsForm({ prefs, onSaved }: { prefs: Prefs; onSaved: () => Promise<vo
         className="flex flex-col gap-3"
         onSubmit={(e) => {
           e.preventDefault();
-          setSaved(false);
+          onEdit();
           if (quiet) return a.setError(quiet);
           a.run(async () => {
             await rpc("set_notification_prefs", { p_muted: [...muted].sort(), p_quiet_start: start || null, p_quiet_end: end || null });
-            setSaved(true);
             await onSaved();
           }, "Could not save.");
         }}

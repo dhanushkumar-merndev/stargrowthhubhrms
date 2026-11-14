@@ -7,7 +7,8 @@ import { useState } from "react";
 import { dayLabel, dayStatus, duration, leaveSlotLabel, monthRange, todayIn, clock, type DayRow, type Totals } from "@/lib/attendance";
 import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
-import { EmptyState, ErrorState, LoadingState, PageTitle, SectionCard, StatusChip } from "../ui";
+import { attendanceFileName, attendanceRows, buildXlsx } from "@/lib/xlsx";
+import { Button, EmptyState, ErrorState, LoadingState, PageTitle, SectionCard, StatusChip } from "../ui";
 import { Glyph } from "../glyphs";
 
 export function Attendance({ now = new Date() }: { now?: Date }) {
@@ -55,6 +56,22 @@ export function Attendance({ now = new Date() }: { now?: Date }) {
               <Stat label="Required" value={duration(q.data.totals.required_seconds)} />
               <Stat label="Short by" value={duration(q.data.totals.shortfall_seconds)} />
             </div>
+            <div className="flex flex-wrap gap-3">
+              <Button
+                variant="outlined"
+                disabled={rows.length === 0}
+                onClick={() => {
+                  const data = q.data;
+                  if (!data) return;
+                  saveFile(buildXlsx(range.label, attendanceRows(data.rows, data.totals, today)), attendanceFileName(range.from));
+                }}
+              >
+                Download Excel
+              </Button>
+              <Link href={`/attendance/print?month=${range.from.slice(0, 7)}`} className="inline-flex min-h-12 items-center rounded-full px-4 font-semibold text-primary">
+                Print / PDF
+              </Link>
+            </div>
             {rows.length === 0 ? (
               <EmptyState art="calendar" title="No days yet" body="Days appear here once your shifts start." />
             ) : (
@@ -62,6 +79,7 @@ export function Attendance({ now = new Date() }: { now?: Date }) {
                 {rows.map((r) => {
                   const s = dayStatus(r);
                   const leave = leaveSlotLabel(r.leave_slots);
+                  const fix = fixLink(r);
                   return (
                     <li key={r.shift_date}>
                       <Link href={`/attendance/${r.shift_date}`} className="block">
@@ -77,6 +95,11 @@ export function Attendance({ now = new Date() }: { now?: Date }) {
                           <StatusChip label={s.label} tone={s.tone} />
                         </SectionCard>
                       </Link>
+                      {fix && (
+                        <Link href={fix.href} className="mt-1 inline-flex min-h-12 items-center px-2 text-body-md font-semibold text-primary">
+                          {fix.label}
+                        </Link>
+                      )}
                     </li>
                   );
                 })}
@@ -87,6 +110,24 @@ export function Attendance({ now = new Date() }: { now?: Date }) {
       </div>
     </>
   );
+}
+
+/** A self-service fix for a day that needs one (forgotten check-out, missing punch). */
+export function fixLink(r: Pick<DayRow, "status" | "shift_date" | "effective_in_at" | "effective_out_at">): { href: string; label: string } | null {
+  if (r.status !== "needs_correction") return null;
+  if (r.effective_in_at && !r.effective_out_at) return { href: `/corrections/new?date=${r.shift_date}&fix=out`, label: `Fix check-out for ${dayLabel(r.shift_date)}` };
+  return { href: `/corrections/new?date=${r.shift_date}`, label: `Request a correction for ${dayLabel(r.shift_date)}` };
+}
+
+export function saveFile(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
 function Stat({ label, value }: { label: string; value: string }) {

@@ -3,6 +3,7 @@
 // home_screen.dart header + quick tiles. The attendance card, approvals and
 // payslip sections are filled in by P4 (attendance), P6 (leave) and P7 (salary).
 
+import { CelebrationsCard } from "./celebrations";
 import { BellBadge, useUnread } from "./notifications";
 import Link from "next/link";
 import { useSession } from "@/lib/session";
@@ -79,6 +80,7 @@ export function Home({ now = new Date() }: { now?: Date }) {
             </Link>
           ))}
         </div>
+        <CelebrationsCard />
       </div>
     </>
   );

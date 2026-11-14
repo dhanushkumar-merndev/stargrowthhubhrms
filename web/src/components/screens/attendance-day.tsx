@@ -137,6 +137,15 @@ export function AttendanceDay({ date, employeeId }: { date: string; employeeId?:
                   subtitle="Fix a missed or wrong punch"
                   href={`/corrections/new?date=${date}`}
                 />
+                {!d.is_required && d.presence_seconds >= 3 * 3600 && (
+                  <ActionRow
+                    art="event_available"
+                    tile="bg-leave-card"
+                    label="Request comp-off"
+                    subtitle="You worked on a day off"
+                    href={`/requests/new/comp-off?date=${date}`}
+                  />
+                )}
                 {d.is_late && !d.late_excused && (
                   <ActionRow
                     art="schedule"

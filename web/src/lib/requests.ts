@@ -84,6 +84,7 @@ export const KIND_LABEL: Record<string, string> = {
   correction: "Attendance correction",
   late_excuse: "Late arrival excuse",
   wfh: "Work from home",
+  comp_off: "Comp-off",
   bank_details: "Salary account",
   profile_details: "Profile details",
   employee_details: "Employee details",
@@ -98,6 +99,7 @@ export const KIND_ART: Record<string, { tile: string; art: string }> = {
   correction: { tile: "bg-attendance-card", art: "schedule" },
   late_excuse: { tile: "bg-warning-soft", art: "schedule" },
   wfh: { tile: "bg-people-card", art: "home" },
+  comp_off: { tile: "bg-leave-card", art: "event_available" },
   bank_details: { tile: "bg-salary-card", art: "bank" },
 };
 
@@ -143,7 +145,7 @@ export function eventLabel(a: string): string {
 export function ownerActions(r: Pick<RequestRow, "kind" | "state">, isAdmin: boolean) {
   const editable = r.state === "draft" || r.state === "submitted" || r.state === "returned";
   return {
-    edit: editable && (r.kind === "leave" || r.kind === "correction" || r.kind === "wfh" || r.kind === "late_excuse"),
+    edit: editable && (r.kind === "leave" || r.kind === "correction" || r.kind === "wfh" || r.kind === "late_excuse" || r.kind === "comp_off"),
     editLabel: r.state === "returned" ? "Edit & resubmit" : "Edit",
     withdraw: editable || r.state === "under_review",
     /** Under review the approver has to accept a withdrawal. */
@@ -162,6 +164,8 @@ export function editHref(r: Pick<RequestRow, "kind" | "id">): string | null {
       return `/requests/new/wfh?edit=${r.id}`;
     case "late_excuse":
       return `/requests/new/late?edit=${r.id}`;
+    case "comp_off":
+      return `/requests/new/comp-off?edit=${r.id}`;
     case "correction":
       return `/corrections/new?edit=${r.id}`;
     default:
@@ -218,6 +222,7 @@ export const REVIEW_KINDS = [
   { id: "correction", label: "Fixes" },
   { id: "wfh", label: "WFH" },
   { id: "late_excuse", label: "Late" },
+  { id: "comp_off", label: "Comp-off" },
 ] as const;
 
 /** Reads a string field from a revision payload. */

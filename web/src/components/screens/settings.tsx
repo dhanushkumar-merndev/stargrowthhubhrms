@@ -58,6 +58,8 @@ export function Settings() {
           </p>
         </SectionCard>
         <ActionRow art="notifications" label="Notifications" subtitle="Turn on alerts, choose what to get, quiet hours" tile="bg-leave-card" href="/settings/notifications" />
+        <ActionRow art="holiday_calendar" label="Calendar subscription" subtitle="Holidays and your leave in your calendar app" tile="bg-attendance-card" href="/settings/calendar" />
+        <ActionRow art="celebration" label="Birthday and anniversary" subtitle="Choose what colleagues see on Home" tile="bg-people-card" href="/settings/celebrations" />
         <ActionRow art="password" label="Change password" subtitle="Signs out your other devices" tile="bg-attendance-card" href="/settings/password" />
         <SectionCard>
           <h2 className="text-title-md font-semibold">Your devices</h2>

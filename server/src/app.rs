@@ -132,6 +132,8 @@ pub fn router(state: AppState) -> Router {
         .route("/ping", get(ping))
         .route("/live", get(crate::live::live))
         .route("/push/config", get(push_config))
+        // Calendar apps: no cookies, the secret token is the credential.
+        .route("/calendar/{file}", get(crate::calendar::feed))
         .merge(auth_routes)
         .merge(rpc_routes)
         .merge(file_routes)

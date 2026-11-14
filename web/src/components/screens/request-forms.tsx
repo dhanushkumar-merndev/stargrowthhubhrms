@@ -5,7 +5,9 @@
 
 import Link from "next/link";
 import { useRef, useState } from "react";
-import { addDays, correctionErrors, correctionInstants, dayLabel, todayIn } from "@/lib/attendance";
+import { type DayRow, addDays, correctionErrors, correctionInstants, dayLabel, todayIn } from "@/lib/attendance";
+import { localHm } from "@/lib/archive";
+import { useRpc } from "@/lib/use-rpc";
 import { ApiError, newOperationId, rpc } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { Banner, Button, PageTitle, SectionCard, TextField } from "../ui";
@@ -68,12 +70,18 @@ function ReasonField({ value, onChange, error }: { value: string; onChange: (v: 
   );
 }
 
-export function CorrectionForm({ initialDate, now = new Date() }: { initialDate?: string; now?: Date }) {
+export function CorrectionForm({ initialDate, fix, now = new Date() }: { initialDate?: string; fix?: "out"; now?: Date }) {
   const { context } = useSession();
   const tz = context?.org.timezone ?? "Asia/Kolkata";
   const today = todayIn(tz, now);
   const [date, setDate] = useState(initialDate ?? today);
-  const [inTime, setIn] = useState("");
+  // Forgot to check out: start from the recorded check-in so only the
+  // leaving time has to be typed.
+  const day = useRpc<{ rows: DayRow[] }>(fix === "out" && initialDate ? "list_my_attendance" : null, { p_from: initialDate, p_to: initialDate });
+  const recorded = day.data?.rows.find((r) => r.shift_date === initialDate && r.effective_in_at);
+  const prefill = date === initialDate && recorded ? localHm(recorded.effective_in_at, recorded.timezone || tz) : "";
+  const [typedIn, setIn] = useState<string | null>(null);
+  const inTime = typedIn ?? prefill;
   const [outTime, setOut] = useState("");
   const [reason, setReason] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -124,6 +132,7 @@ export function CorrectionForm({ initialDate, now = new Date() }: { initialDate?
         ) : (
           <form noValidate onSubmit={submit} className="flex flex-col gap-4">
             {error && <Banner>{error}</Banner>}
+            {fix === "out" && <Banner tone="info">{prefill ? `You checked in at ${prefill}. Enter the time you actually left.` : "Enter the times you checked in and actually left."}</Banner>}
             <TextField label="Date" type="date" value={date} max={today} onChange={(e) => setDate(e.target.value)} error={errors.date} />
             <div className="grid grid-cols-2 gap-3">
               <TextField label="Checked in at" type="time" value={inTime} onChange={(e) => setIn(e.target.value)} error={errors.inTime} />
@@ -156,7 +165,7 @@ function mapFields(f: Record<string, string>): Record<string, string> {
   return out;
 }
 
-export function AttendanceRequestForm({ kind, initialDate, now = new Date() }: { kind: "wfh" | "late_excuse"; initialDate?: string; now?: Date }) {
+export function AttendanceRequestForm({ kind, initialDate, now = new Date() }: { kind: "wfh" | "late_excuse" | "comp_off"; initialDate?: string; now?: Date }) {
   const { context } = useSession();
   const tz = context?.org.timezone ?? "Asia/Kolkata";
   const today = todayIn(tz, now);
@@ -174,6 +183,7 @@ export function AttendanceRequestForm({ kind, initialDate, now = new Date() }: {
     e.preventDefault();
     const v: Record<string, string> = {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) v.date = "Choose a date.";
+    else if (kind === "comp_off" && from > today) v.date = "Choose a day you have already worked.";
     else if (!wfh && from > today) v.date = "You can only excuse a past or current day.";
     if (wfh && (!/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from)) v.endDate = "The end date must be on or after the start date.";
     if (reason.trim().length < 5) v.reason = "Tell HR why (at least 5 characters).";
@@ -205,16 +215,19 @@ export function AttendanceRequestForm({ kind, initialDate, now = new Date() }: {
     }
   };
 
-  const title = wfh ? "Work from home" : "Explain late arrival";
+  const title = wfh ? "Work from home" : kind === "comp_off" ? "Request comp-off" : "Explain late arrival";
   return (
     <>
       <PageTitle title={title} back={initialDate ? `/attendance/${initialDate}` : "/action"} />
       <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
         {done ? (
-          <Done title="Request sent" body="HR will review it and you will be notified." date={wfh ? undefined : from} />
+          <Done title="Request sent" body={kind === "comp_off" ? "Once HR approves it, the comp-off is added to your leave balance." : "HR will review it and you will be notified."} date={wfh ? undefined : from} />
         ) : (
           <form noValidate onSubmit={submit} className="flex flex-col gap-4">
             {error && <Banner>{error}</Banner>}
+            {kind === "comp_off" && (
+              <Banner tone="info">Worked on a holiday or day off? Ask within 30 days. 6 hours or more earns a full day of leave, 3 hours or more earns half a day.</Banner>
+            )}
             {wfh ? (
               <div className="grid grid-cols-2 gap-3">
                 <TextField label="From" type="date" value={from} onChange={(e) => setFrom(e.target.value)} error={errors.date} />

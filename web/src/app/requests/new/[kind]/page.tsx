@@ -3,7 +3,7 @@ import { AttendanceRequestForm } from "@/components/screens/request-forms";
 
 export const metadata = { title: "New request · HRMS" };
 
-const KINDS = { wfh: "wfh", late: "late_excuse", late_excuse: "late_excuse" } as const;
+const KINDS = { wfh: "wfh", late: "late_excuse", late_excuse: "late_excuse", "comp-off": "comp_off", comp_off: "comp_off" } as const;
 
 export default async function NewRequestPage({
   params,

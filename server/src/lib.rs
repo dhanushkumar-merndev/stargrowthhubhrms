@@ -2,6 +2,7 @@ pub mod app;
 pub mod archive;
 pub mod auth;
 pub mod bootstrap;
+pub mod calendar;
 pub mod config;
 pub mod db;
 pub mod error;

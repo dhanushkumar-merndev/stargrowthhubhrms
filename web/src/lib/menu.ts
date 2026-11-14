@@ -27,6 +27,7 @@ export function actionScopes(c: Caps): { scope: Scope; label: string; art: strin
     { label: "Fix a check-in or check-out", subtitle: "Forgot to punch, or the time is wrong", href: "/corrections/new", art: "tile_fix_punch", tile: lav },
     { label: "Work from home", subtitle: "Ask HR to work from home on some days", href: "/requests/new/wfh", art: "home", tile: lav },
     { label: "Excuse a late arrival", subtitle: "Late for a reason? Ask HR not to count it", href: "/requests/new/late", art: "schedule", tile: lav },
+    { label: "Request comp-off", subtitle: "Worked on a holiday or day off? Get the day back", href: "/requests/new/comp-off", art: "event_available", tile: lav },
     { label: "Apply for leave", subtitle: "Casual, paid or unpaid leave", href: "/leave/apply", art: "tile_apply_leave", tile: cyan },
     { label: "Leave balance & history", subtitle: "What you have used and have left", href: "/leave", art: "tile_leave_balance", tile: cyan },
     { label: "Holiday calendar", subtitle: "Office holidays this year", href: "/holidays", art: "holiday_calendar", tile: cyan },
