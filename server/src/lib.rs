@@ -6,6 +6,7 @@ pub mod db;
 pub mod error;
 pub mod iclock;
 pub mod jobs;
+pub mod live;
 pub mod punch;
 pub mod rpc;
 pub mod webauthn;

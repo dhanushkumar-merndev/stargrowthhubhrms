@@ -52,6 +52,8 @@ pub struct AppState {
     pub cookie: CookieSpec,
     /// None only in tests that exercise routing without a database.
     pub db: Option<Db>,
+    /// Started on first use, on the serving runtime.
+    live: Arc<tokio::sync::OnceCell<crate::live::Hub>>,
 }
 
 impl AppState {
@@ -61,7 +63,16 @@ impl AppState {
             config: Arc::new(config),
             cookie,
             db,
+            live: Arc::default(),
         }
+    }
+
+    pub async fn live_hub(&self) -> ApiResult<&crate::live::Hub> {
+        let pool = self.db()?.pool.clone();
+        Ok(self
+            .live
+            .get_or_init(|| async move { crate::live::Hub::spawn(pool) })
+            .await)
     }
 
     pub fn db(&self) -> ApiResult<&Db> {
@@ -94,6 +105,7 @@ pub fn router(state: AppState) -> Router {
     // state-changing requests must come from our own web origin (CSRF).
     let v1 = Router::new()
         .route("/ping", get(ping))
+        .route("/live", get(crate::live::live))
         .merge(auth_routes)
         .merge(rpc_routes)
         .route_layer(middleware::from_fn_with_state(

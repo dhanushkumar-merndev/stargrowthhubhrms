@@ -11,6 +11,7 @@ axum = "0.8.9"
 base64 = "0.22"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 dotenvy = "0.15.7"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 hmac = "0.12"
 p256 = { version = "0.13", features = ["ecdsa"] }
 serde = { version = "1.0.229", features = ["derive"] }

@@ -2148,3 +2148,126 @@ async fn iclock_is_off_without_a_secret_and_503_without_a_database() {
     .unwrap();
     assert_eq!(wrong["code"], "bad_secret");
 }
+
+// ============================================================== live (SSE)
+
+async fn first_frames(app: &Router, req: Request<Body>, wait_ms: u64) -> (StatusCode, String) {
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let mut body = res.into_body();
+    let mut out = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, body.frame()).await {
+        if let Ok(data) = frame.into_data() {
+            out.push_str(&String::from_utf8_lossy(&data));
+        }
+    }
+    (status, out)
+}
+
+#[tokio::test]
+async fn live_stream_is_private_per_audience_and_replays() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let (_, temp) = t.hire(&admin, "EMP900", None).await;
+    let emp = t.login("EMP900", &temp).await.session_cookie().unwrap();
+    let emp = {
+        let r = t.change_password(&emp, &temp, NEW_PW).await;
+        r.session_cookie().unwrap()
+    };
+    let before: i64 = sqlx::query_scalar("select coalesce(max(id), 0) from hrms.live_events")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+
+    // a machine punch: HR/Admin audience
+    let sn = t.machine(&admin, json!({})).await;
+    let r = t
+        .dpost(
+            &format!("/iclock/cdata?SN={sn}&table=ATTLOG"),
+            &format!("77\t{}\n", local_now(1)),
+        )
+        .await;
+    assert_eq!(r.text, "OK: 1");
+
+    let live = |cookie: Option<&str>, last: Option<i64>| {
+        let mut b = t.base(
+            Method::GET,
+            &format!(
+                "/v1/live{}",
+                last.map(|v| format!("?after={v}")).unwrap_or_default()
+            ),
+        );
+        if let Some(c) = cookie {
+            b = b.header(header::COOKIE, c);
+        }
+        b.body(Body::empty()).unwrap()
+    };
+    let (status, text) = first_frames(&t.app, live(Some(&admin), Some(before)), 400).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains("event: device.punch"), "{text}");
+    assert!(text.contains("id: "), "{text}");
+
+    // the employee never sees HR/Admin events
+    let (status, text) = first_frames(&t.app, live(Some(&emp), Some(before)), 400).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!text.contains("device.punch"), "{text}");
+
+    // Last-Event-ID header wins and skips what was already delivered
+    let newest: i64 = sqlx::query_scalar("select max(id) from hrms.live_events")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    let req = t
+        .base(Method::GET, &format!("/v1/live?after={before}"))
+        .header(header::COOKIE, &admin)
+        .header("last-event-id", newest.to_string())
+        .body(Body::empty())
+        .unwrap();
+    let (_, text) = first_frames(&t.app, req, 300).await;
+    assert!(!text.contains("device.punch"), "{text}");
+
+    // a live (not replayed) event reaches an open stream
+    let res = t
+        .app
+        .clone()
+        .oneshot(live(Some(&admin), None))
+        .await
+        .unwrap();
+    assert_eq!(
+        res.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/event-stream"
+    );
+    let mut body = res.into_body();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    t.dpost(
+        &format!("/iclock/cdata?SN={sn}&table=ATTLOG"),
+        &format!("78\t{}\n", local_now(1)),
+    )
+    .await;
+    let mut got = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !got.contains("device.punch") {
+        match tokio::time::timeout_at(deadline, body.frame()).await {
+            Ok(Some(Ok(f))) => {
+                got.push_str(&String::from_utf8_lossy(&f.into_data().unwrap_or_default()))
+            }
+            _ => break,
+        }
+    }
+    assert!(got.contains("event: device.punch"), "{got}");
+
+    // signed out / unproxied
+    assert_eq!(
+        first_frames(&t.app, live(None, None), 100).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let req = Request::get("/v1/live")
+        .header(header::COOKIE, &admin)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        first_frames(&t.app, req, 100).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
