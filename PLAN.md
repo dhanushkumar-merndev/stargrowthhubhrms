@@ -220,9 +220,7 @@ push to GHCR → Render deploys the image.** Release profile: `lto="thin"`, `cod
 ## 9. Environment (`.env.example`, shared by both apps)
 
 ```
-# web — public
-NEXT_PUBLIC_VAPID_PUBLIC_KEY=
-# web — server only (Vercel)
+# web — server only (Vercel); no NEXT_PUBLIC_* needed (push public key comes from GET /v1/push/config)
 API_ORIGIN=https://web-hrms-api.onrender.com
 PROXY_SECRET=               # >= 32 chars, same value on Render
 # server (Render)
@@ -231,7 +229,8 @@ DATABASE_MAX_CONNECTIONS=5
 APP_ORIGIN=https://web-hrms.vercel.app
 APP_SECRET=                 # >= 32 chars; keys IP hashes (sessions are opaque cookies, not JWTs)
 VAPID_PRIVATE_KEY=
-VAPID_SUBJECT=mailto:<admin contact>
+VAPID_SUBJECT=mailto:<shared ops contact>
+VAPID_PUBLIC_KEY=           # optional start-up check
 WEBAUTHN_RP_ID=web-hrms.vercel.app
 R2_ACCOUNT_ID=  R2_ACCESS_KEY_ID=  R2_SECRET_ACCESS_KEY=  R2_BUCKET=
 DEVICE_INGEST_SECRET=       # >= 32 chars, stored hashed in DB
@@ -258,8 +257,8 @@ ORG_CODE=  ORG_NAME=  ADMIN_EMPLOYEE_CODE=  ADMIN_NAME=  ADMIN_PASSWORD=
 | P7 People & payroll | Private file storage (local folder or R2, SigV4, write-once), audited file viewer, profile + photo + personal-details change request, directory, employees list/new/detail (work, assignment, access, personal, status, reset password, salary, payslips, documents, phones, leave adjust, schedule change)/Excel+CSV import, salary, bank-detail change with proof, payslips, payslip upload/publish, documents + company policies, leave attachments | 5 MB/MIME/PDF/sha + storage + machine-photo API tests, bank-proof API test (found and fixed: proof never became current version), 115 new Vitest tests, browser e2e new hire → payslip publish → employee view → document → photo → bank change → import ✅ 2026-11-14 |
 | P8 Admin | Org + attendance rules, offices (geofence, Wi-Fi, IP ranges), shifts (draft/publish versions), teams/departments/managers, roles with step-up password, leave entitlements/types, holidays + Saturdays off + suggestions, outside work/WFH, Google Sheet, audit (keyset, local-day ranges), background jobs health, announcements, workspace, annual archive built and re-verified in the browser (own ZIP writer/reader, manifest hash, earlier-archive merge, partial) + cleanup batches ported to Rust | Archive API access test, 172 new Vitest tests (validation edges, last-Admin guard, reauth retry/cancel, tampered manifest/ZIP, corrupt downloads, path traversal, formula injection), browser e2e across all 16 admin screens ✅ 2026-11-14 (fixed: fingertipssl had replaced list_offices with a name-only list) |
 | P9 Notifications | Web Push in Rust without a vendor SDK (RFC 8291 aes128gcm + RFC 8292 VAPID, push-service host allowlist, no redirects), outbox worker every 10 s with retry/revoke, inbox with keyset paging + mark read, live bell badge over SSE, per-category mute + quiet hours (org time zone, wraps midnight; security notices always sent), test push, iPhone Home Screen guidance, unsubscribe on sign-out | RFC 8291 Appendix A vector byte-for-byte, VAPID JWT verify, 7 push unit tests, API test (prefs validation, quiet-hour edges, no-push fallback, non-push-service subscription revoked without a call, rate limit), 28 new Vitest tests, browser e2e: live badge 10→11, inbox, mark all read ✅ 2026-11-14 (real delivery needs a real browser: headless Chrome always denies notifications — check on Android Chrome/desktop/installed iOS after deploy) |
-| P10 New features | §7 items 3–11 | Each has tests |
-| P11 Deploy | New Supabase project, R2, Render (GHCR image), Vercel, Worker on workers.dev, UptimeRobot, `bootstrap` first Admin | Production smoke test checklist in `DEPLOY.md` |
+| P10 New features ✅ 2026-11-14 | Two-step sign-in (TOTP RFC 6238, sealed secret, replay-safe steps, login challenge, recovery codes, Admin reset with step-up), Who's in, Web Push, sessions list, forgot-checkout self-fix (prefilled), holiday + own-leave iCal feed (secret link, hash only, revocable), own attendance Excel (own XLSX writer) + print/PDF, opt-in birthdays and work anniversaries on Home (no birth year), comp-off requests credited to a 90-day Comp off balance, Ctrl/⌘-K command search | RFC 6238/4226 vectors, RFC 5545 escaping/folding, 4 new API tests (calendar, celebrations, comp-off, two-step end to end), 52 new Vitest tests; 617 web / 110 unit / 47 API green |
+| P11 Deploy (guide ✅ 2026-11-14) | New Supabase project, R2, Render (GHCR image), Vercel, Worker on workers.dev, UptimeRobot, `bootstrap` first Admin | `DEPLOY.md` written (secrets, session-mode pooler for LISTEN, Vercel 4.5 MB upload cap, VAPID keys, first Admin, rotation, smoke-test checklist). Running it needs the owner's accounts; the smoke test (incl. real-device push) is ticked after go-live |
 
 ---
 
