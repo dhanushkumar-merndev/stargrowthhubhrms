@@ -3271,3 +3271,170 @@ async fn comp_off_for_a_day_off_is_reviewed_and_credited_once() {
     let r = save(d(2), "Worked the stock count").await;
     assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+fn b32_decode(s: &str) -> Vec<u8> {
+    let (mut buf, mut bits, mut out) = (0u32, 0u32, Vec::new());
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'2'..=b'7' => c - b'2' + 26,
+            _ => panic!("bad base32"),
+        } as u32;
+        buf = (buf << 5) | v;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn two_step_sign_in_end_to_end() {
+    use hrms_server::auth::two_step::{STEP, hotp};
+    let Some(t) = setup().await else {
+        eprintln!("SKIP: HRMS_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = t.admin().await;
+    let (hr_id, temp) = t.hire(&admin, "M001", Some("hr")).await;
+    let r = t.login("M001", &temp).await;
+    let r = t.change_password(&r.session_cookie().unwrap(), &temp, NEW_PW).await;
+    let hr = r.session_cookie().unwrap();
+    let now_step = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() / STEP;
+
+    let r = t.rpc("get_two_step_status", json!({}), &hr).await;
+    assert_eq!(r.body["data"]["enabled"], json!(false), "{}", r.body);
+    assert_eq!(r.body["data"]["recommended"], json!(true));
+
+    // Setup needs the password.
+    let r = t.post("/v1/auth/two-step/setup", json!({ "password": "wrong" }), Some(&hr)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    let r = t.post("/v1/auth/two-step/setup", json!({ "password": NEW_PW }), Some(&hr)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let secret_b32 = r.body["data"]["secret"].as_str().unwrap().to_owned();
+    assert!(r.body["data"]["uri"].as_str().unwrap().starts_with("otpauth://totp/HRMS:M001?secret="));
+    assert!(r.body["data"]["qr_svg"].as_str().unwrap().contains("<svg"));
+    let secret = b32_decode(&secret_b32);
+    let stored: Vec<u8> = sqlx::query_scalar("select secret_enc from iam.totp_factors f join hrms.employees e on e.auth_user_id = f.user_id where e.id = $1")
+        .bind(hr_id)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert!(!stored.windows(secret.len()).any(|w| w == secret.as_slice()), "secret is sealed");
+    let code = |step: u64| format!("{:06}", hotp(&secret, step));
+
+    // Not on until a right code is entered; password alone still signs in.
+    let r = t.post("/v1/auth/two-step/enable", json!({ "code": "000000" }), Some(&hr)).await;
+    assert_eq!(r.code(), "INVALID_CODE", "{}", r.body);
+    let r = t.login("M001", NEW_PW).await;
+    assert!(r.session_cookie().is_some());
+    let r = t.post("/v1/auth/two-step/enable", json!({ "code": code(now_step() - 1) }), Some(&hr)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let recovery: Vec<String> = serde_json::from_value(r.body["data"]["recovery_codes"].clone()).unwrap();
+    assert_eq!(recovery.len(), 10);
+    let r = t.post("/v1/auth/two-step/setup", json!({ "password": NEW_PW }), Some(&hr)).await;
+    assert_eq!(r.code(), "ALREADY_ON", "cannot silently replace: {}", r.body);
+
+    // Password now yields a challenge, not a session.
+    let r = t.login("M001", NEW_PW).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(r.session_cookie().is_none(), "no session before the code");
+    assert_eq!(r.body["data"]["two_step_required"], json!(true));
+    let challenge = r.body["data"]["challenge"].as_str().unwrap().to_owned();
+    // Wrong password still fails the same generic way.
+    assert_eq!(t.login("M001", "nope-nope-nope").await.code(), "AUTH_FAILED");
+
+    let step2 = |ch: &str, c: &str| t.post("/v1/auth/login/two-step", json!({ "challenge": ch, "code": c }), None);
+    assert_eq!(step2(&challenge, "123456").await.code(), "INVALID_CODE");
+    assert_eq!(step2("not-a-token", &code(now_step())).await.code(), "CHALLENGE_EXPIRED");
+    // The code used to enable cannot be replayed.
+    assert_eq!(step2(&challenge, &code(now_step() - 1)).await.code(), "INVALID_CODE");
+    let r = step2(&challenge, &code(now_step())).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let signed_in = r.session_cookie().expect("session after the code");
+    assert_eq!(r.body["data"]["must_change_password"], json!(false));
+    assert_eq!(t.rpc("get_session_context", json!({}), &signed_in).await.status, StatusCode::OK);
+    // A challenge works once.
+    assert_eq!(step2(&challenge, &code(now_step() + 1)).await.code(), "CHALLENGE_EXPIRED");
+
+    // Five wrong tries end the challenge even for the right code.
+    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"].as_str().unwrap().to_owned();
+    for _ in 0..5 {
+        assert_ne!(step2(&ch, "999999").await.status, StatusCode::OK);
+    }
+    assert_eq!(step2(&ch, &code(now_step() + 1)).await.code(), "CHALLENGE_EXPIRED");
+
+    // Expired challenges are refused.
+    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"].as_str().unwrap().to_owned();
+    sqlx::query("update iam.login_challenges set expires_at = now() - interval '1 second' where consumed_at is null")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(step2(&ch, &code(now_step() + 1)).await.code(), "CHALLENGE_EXPIRED");
+
+    // A recovery code works once (any case/spacing) and tells the owner.
+    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"].as_str().unwrap().to_owned();
+    let r = step2(&ch, &recovery[0].to_lowercase().replace('-', " ")).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"].as_str().unwrap().to_owned();
+    assert_eq!(step2(&ch, &recovery[0]).await.code(), "INVALID_CODE");
+    let told: i64 = sqlx::query_scalar("select count(*) from hrms.notifications where recipient_id = $1 and kind = 'account.two_step_recovery_used'")
+        .bind(hr_id)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(told, 1);
+    let r = t.rpc("get_two_step_status", json!({}), &hr).await;
+    assert_eq!(r.body["data"]["recovery_left"], json!(9), "{}", r.body);
+
+    // New recovery codes need password + code; old ones stop working.
+    let r = t.post("/v1/auth/two-step/recovery", json!({ "password": NEW_PW, "code": recovery[1] }), Some(&hr)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let fresh: Vec<String> = serde_json::from_value(r.body["data"]["recovery_codes"].clone()).unwrap();
+    assert!(fresh.iter().all(|c| !recovery.contains(c)));
+    let r = t.rpc("get_two_step_status", json!({}), &hr).await;
+    assert_eq!(r.body["data"]["recovery_left"], json!(10));
+
+    // Admin reset: needs the Admin's password grant, cannot target self, audited.
+    let (emp_id, _) = t.employee(&admin, "M002").await;
+    let r = t.rpc("reset_two_step", json!({ "p_employee_id": hr_id }), &admin).await;
+    assert_eq!(r.code(), "REAUTH_REQUIRED", "{}", r.body);
+    let r = t.post("/v1/auth/reauth", json!({ "action": "mfa.reset", "password": NEW_PW, "target_id": hr_id }), Some(&admin)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = t.rpc("get_employee_two_step", json!({ "p_employee_id": hr_id }), &admin).await;
+    assert_eq!(r.body["data"]["enabled"], json!(true));
+    let r = t.rpc("reset_two_step", json!({ "p_employee_id": hr_id }), &admin).await;
+    assert_eq!(r.body["data"]["reset"], json!(true), "{}", r.body);
+    let r = t.login("M001", NEW_PW).await;
+    assert!(r.session_cookie().is_some(), "password alone works again: {}", r.body);
+    let r = t.rpc("reset_two_step", json!({ "p_employee_id": emp_id }), &hr).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "HR cannot reset: {}", r.body);
+    let audits: Vec<String> = sqlx::query_scalar("select action from hrms.audit_logs where target_id = $1 and action like 'two_step.%' order by created_at, id")
+        .bind(hr_id)
+        .fetch_all(&t.pool)
+        .await
+        .unwrap();
+    // The second recovery_used is the code spent to get new codes.
+    assert_eq!(audits, vec!["two_step.enabled", "two_step.recovery_used", "two_step.recovery_used", "two_step.codes_replaced", "two_step.reset"]);
+
+    // Turn on again, then off by the owner (password + code). The password
+    // check allows 5 tries per 15 minutes; start this part with a fresh window.
+    sqlx::query("delete from hrms.rate_limit_buckets where bucket like 'reauth:%'").execute(&t.pool).await.unwrap();
+    let r = t.post("/v1/auth/two-step/setup", json!({ "password": NEW_PW }), Some(&hr)).await;
+    let secret = b32_decode(r.body["data"]["secret"].as_str().unwrap());
+    let code = |step: u64| format!("{:06}", hotp(&secret, step));
+    let r = t.post("/v1/auth/two-step/enable", json!({ "code": code(now_step()) }), Some(&hr)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = t.post("/v1/auth/two-step/disable", json!({ "password": NEW_PW, "code": code(now_step()) }), Some(&hr)).await;
+    assert_eq!(r.code(), "INVALID_CODE", "same step twice: {}", r.body);
+    let r = t.post("/v1/auth/two-step/disable", json!({ "password": NEW_PW, "code": code(now_step() + 1) }), Some(&hr)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = t.post("/v1/auth/two-step/disable", json!({ "password": NEW_PW, "code": "123456" }), Some(&hr)).await;
+    assert_eq!(r.code(), "NOT_ON");
+
+    // Management needs a session; internal functions are not RPCs.
+    assert_eq!(t.post("/v1/auth/two-step/setup", json!({ "password": NEW_PW }), None).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(t.rpc("internal_two_step_event", json!({ "p_auth_user_id": Uuid::nil(), "p_event": "enabled" }), &hr).await.status, StatusCode::NOT_FOUND);
+}

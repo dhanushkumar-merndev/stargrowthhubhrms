@@ -14,7 +14,9 @@ interface SessionState {
   /** Shown on the sign-in screen (e.g. "Session expired"). */
   message: string | null;
   refresh: () => Promise<void>;
-  login: (code: string, password: string) => Promise<void>;
+  /** Resolves to a challenge when the account needs a two-step code. */
+  login: (code: string, password: string) => Promise<{ challenge: string } | void>;
+  loginTwoStep: (challenge: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -84,7 +86,18 @@ export function SessionProvider({ children, initialPhase = "loading" }: { childr
 
   const login = useCallback(
     async (code: string, password: string) => {
-      await authApi.login(code, password);
+      const res = await authApi.login(code, password);
+      if (res.data?.two_step_required && res.data.challenge) return { challenge: res.data.challenge };
+      setMessage(null);
+      await clearCache();
+      await refresh();
+    },
+    [clearCache, refresh],
+  );
+
+  const loginTwoStep = useCallback(
+    async (challenge: string, code: string) => {
+      await authApi.loginTwoStep(challenge, code);
       setMessage(null);
       await clearCache();
       await refresh();
@@ -108,8 +121,8 @@ export function SessionProvider({ children, initialPhase = "loading" }: { childr
   }, [clearCache]);
 
   const value = useMemo<SessionState>(
-    () => ({ phase, context, caps: caps(context), message, refresh, login, logout }),
-    [phase, context, message, refresh, login, logout],
+    () => ({ phase, context, caps: caps(context), message, refresh, login, loginTwoStep, logout }),
+    [phase, context, message, refresh, login, loginTwoStep, logout],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

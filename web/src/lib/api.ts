@@ -151,10 +151,12 @@ export function newOperationId(): string {
 
 export const authApi = {
   login: (employeeCode: string, password: string) =>
-    post<Envelope<{ must_change_password: boolean; credential_hold: boolean }>>("/auth/login", {
+    post<Envelope<{ must_change_password?: boolean; credential_hold?: boolean; two_step_required?: boolean; challenge?: string }>>("/auth/login", {
       employee_code: employeeCode,
       password,
     }),
+  loginTwoStep: (challenge: string, code: string) =>
+    post<Envelope<{ must_change_password: boolean; credential_hold: boolean }>>("/auth/login/two-step", { challenge, code }),
   logout: () => post<Envelope<{ signed_out: boolean }>>("/auth/logout"),
   changePassword: (operationId: string, current: string, next: string) =>
     post<Envelope<{ status: string }>>("/auth/password", {

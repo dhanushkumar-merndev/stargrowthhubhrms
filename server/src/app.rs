@@ -104,6 +104,11 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/logout", post(auth::routes::logout))
         .route("/auth/password", post(auth::routes::change_password))
         .route("/auth/reauth", post(auth::routes::reauth))
+        .route("/auth/login/two-step", post(auth::two_step::login_two_step))
+        .route("/auth/two-step/setup", post(auth::two_step::setup))
+        .route("/auth/two-step/enable", post(auth::two_step::enable))
+        .route("/auth/two-step/disable", post(auth::two_step::disable))
+        .route("/auth/two-step/recovery", post(auth::two_step::recovery))
         .route("/admin/users", post(auth::routes::provision_user))
         .route(
             "/admin/users/{employee_id}/reset-password",

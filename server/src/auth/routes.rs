@@ -31,12 +31,13 @@ const GENERIC_LOGIN_ERROR: &str = "Employee ID or password is incorrect.";
 pub const SESSION_SECONDS: i64 = 30 * 24 * 3600;
 
 /// Actions that can be unlocked with a fresh password check (auth-reauth).
-pub const REAUTH_ACTIONS: [&str; 5] = [
+pub const REAUTH_ACTIONS: [&str; 6] = [
     "role.elevate",
     "archive.cleanup",
     "export.bulk_salary",
     "export.annual",
     "credentials.reset_admin",
+    "mfa.reset",
 ];
 
 fn login_failed(rid: Uuid) -> ApiError {
@@ -44,7 +45,7 @@ fn login_failed(rid: Uuid) -> ApiError {
         .with_request_id(Some(rid.to_string()))
 }
 
-async fn service(pool: &PgPool, rid: Uuid) -> ApiResult<Transaction<'static, Postgres>> {
+pub(super) async fn service(pool: &PgPool, rid: Uuid) -> ApiResult<Transaction<'static, Postgres>> {
     db::begin_as(pool, Caller::Service, rid).await
 }
 
@@ -78,7 +79,7 @@ fn require_uuid(v: Option<Uuid>, field: &str) -> ApiResult<Uuid> {
 }
 
 /// Password hash stored for an alias, if the login exists.
-async fn stored_password(
+pub(super) async fn stored_password(
     tx: &mut Transaction<'static, Postgres>,
     alias: &str,
 ) -> ApiResult<Option<(Uuid, Option<String>)>> {
@@ -93,7 +94,7 @@ async fn stored_password(
 /// Creates a session row and returns the Set-Cookie value. Must run in its own
 /// transaction AFTER any credentials barrier commits (the barrier compares
 /// against the session's creation time).
-async fn issue_session(
+pub(super) async fn issue_session(
     state: &AppState,
     rid: Uuid,
     user_id: Uuid,
@@ -115,7 +116,7 @@ async fn issue_session(
     Ok(state.cookie.set(&tok, SESSION_SECONDS))
 }
 
-fn with_cookie(body: impl IntoResponse, cookie: header::HeaderValue) -> Response {
+pub(super) fn with_cookie(body: impl IntoResponse, cookie: header::HeaderValue) -> Response {
     let mut res = body.into_response();
     res.headers_mut().append(header::SET_COOKIE, cookie);
     res
@@ -190,11 +191,16 @@ pub async fn login(
         return Err(login_failed(rid));
     }
 
-    let cookie = issue_session(&state, rid, user_id.expect("checked"), &headers).await?;
+    let user_id = user_id.expect("checked");
     let data = json!({
         "must_change_password": result["must_change_password"].as_bool().unwrap_or(false),
         "credential_hold": result["credential_hold"].as_bool().unwrap_or(false),
     });
+    // Two-step sign-in: no session until the code is right.
+    if let Some(challenge) = super::two_step::challenge_if_enabled(&state, rid, user_id, &data).await? {
+        return Ok(ok(json!({ "two_step_required": true, "challenge": challenge }), rid).into_response());
+    }
+    let cookie = issue_session(&state, rid, user_id, &headers).await?;
     Ok(with_cookie(ok(data, rid), cookie))
 }
 
@@ -222,13 +228,13 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiRes
 
 // ------------------------------------------------------------ shared actor
 
-struct Actor {
-    employee_id: Uuid,
-    employee_code: String,
-    auth_alias: String,
+pub(super) struct Actor {
+    pub(super) employee_id: Uuid,
+    pub(super) employee_code: String,
+    pub(super) auth_alias: String,
 }
 
-async fn resolve_actor(
+pub(super) async fn resolve_actor(
     tx: &mut Transaction<'static, Postgres>,
     c: &Claims,
     mode: &str,
@@ -253,7 +259,7 @@ async fn resolve_actor(
     })
 }
 
-async fn rate_limit(
+pub(super) async fn rate_limit(
     tx: &mut Transaction<'static, Postgres>,
     bucket: &str,
     window_seconds: i32,
@@ -790,7 +796,12 @@ mod tests {
 
     #[test]
     fn reauth_allowlist_matches_sql() {
-        assert_eq!(REAUTH_ACTIONS.len(), 5);
+        // The newest definition of the grants table's action check.
+        let sql = include_str!("../../migrations/20261114180000_web_two_step.sql");
+        let start = sql.find("reauthentication_grants_action_check check (action in (").expect("constraint");
+        let list = &sql[start..start + sql[start..].find("))").unwrap()];
+        let in_sql: Vec<&str> = list.split('\'').skip(1).step_by(2).collect();
+        assert_eq!(in_sql, REAUTH_ACTIONS.to_vec());
         assert!(!REAUTH_ACTIONS.contains(&"role.elevate "));
     }
 

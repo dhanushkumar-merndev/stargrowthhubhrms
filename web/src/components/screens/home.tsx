@@ -4,6 +4,7 @@
 // payslip sections are filled in by P4 (attendance), P6 (leave) and P7 (salary).
 
 import { CelebrationsCard } from "./celebrations";
+import { TwoStepNudge } from "./two-step";
 import { BellBadge, useUnread } from "./notifications";
 import Link from "next/link";
 import { useSession } from "@/lib/session";
@@ -71,6 +72,7 @@ export function Home({ now = new Date() }: { now?: Date }) {
         </div>
       </header>
       <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+        {caps.isHrOrAdmin && <TwoStepNudge />}
         <SectionHeader title="Quick actions" href="/action" moreLabel="All actions" />
         <div className="grid grid-cols-4 gap-3">
           {TILES.map((t) => (

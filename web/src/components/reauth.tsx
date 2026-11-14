@@ -14,7 +14,7 @@ import { useEffect, useState } from "react";
 import { ApiError, authApi } from "@/lib/api";
 import { Banner, Button, Sheet, TextField } from "./ui";
 
-export type ReauthAction = "role.elevate" | "archive.cleanup" | "export.bulk_salary" | "export.annual" | "credentials.reset_admin";
+export type ReauthAction = "role.elevate" | "archive.cleanup" | "export.bulk_salary" | "export.annual" | "credentials.reset_admin" | "mfa.reset";
 
 interface Request {
   action: ReauthAction;
@@ -32,6 +32,7 @@ export const ACTION_LABEL: Record<ReauthAction, string> = {
   "export.bulk_salary": "export everyone's salary",
   "export.annual": "create the annual archive",
   "credentials.reset_admin": "reset an Admin's password",
+  "mfa.reset": "turn off someone's two-step sign-in",
 };
 
 /** Asks for the password directly (for flows that know they need it). */

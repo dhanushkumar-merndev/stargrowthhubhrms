@@ -470,6 +470,7 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
             </SectionCard>
             {e.can_edit && !self && (
               <div className="flex flex-col gap-2">
+                <TwoStepAdmin id={e.id} />
                 <Button variant="outlined" onClick={() => setSheet("reset")} disabled={e.status !== "active"}>
                   Reset password
                 </Button>
@@ -713,6 +714,54 @@ function AccessSheet({ e, isAdmin, onClose, onSaved }: { e: EmployeeDetailData; 
       <p className="text-body-sm text-text-secondary">HR and Admin can review requests and manage records. The Manager label is shown on profiles only.</p>
       <TextArea label="Reason" value={reason} onChange={setReason} maxLength={500} />
     </SheetForm>
+  );
+}
+
+/** Admin only: see and turn off someone's two-step sign-in (lost phone). */
+export function TwoStepAdmin({ id }: { id: string }) {
+  const { caps: c } = useSession();
+  const q = useRpc<{ enabled: boolean }>(c.isAdmin ? "get_employee_two_step" : null, { p_employee_id: id });
+  const [confirm, setConfirm] = useState(false);
+  const [done, setDone] = useState(false);
+  const a = useAction();
+  if (!c.isAdmin || !q.data) return null;
+  return (
+    <SectionCard>
+      <div className="flex flex-col gap-2">
+        <KeyValue k="Two-step sign-in" v={q.data.enabled ? "On" : "Off"} />
+        {done && <Banner tone="success">Two-step sign-in is off. They can sign in with their password and set it up again.</Banner>}
+        {a.error && <Banner>{a.error}</Banner>}
+        {q.data.enabled &&
+          (confirm ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-body-md">Only do this if they lost their phone and recovery codes and you have checked who they are.</p>
+              <div className="flex gap-3">
+                <Button
+                  variant="danger"
+                  busy={a.busy}
+                  onClick={() =>
+                    a.run(async () => {
+                      await withReauth("mfa.reset", id, () => rpc("reset_two_step", { p_employee_id: id }));
+                      setDone(true);
+                      setConfirm(false);
+                      await q.mutate();
+                    }, "Could not turn it off.")
+                  }
+                >
+                  Turn off
+                </Button>
+                <Button variant="text" onClick={() => setConfirm(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button variant="outlined" onClick={() => setConfirm(true)}>
+              Turn off two-step sign-in
+            </Button>
+          ))}
+      </div>
+    </SectionCard>
   );
 }
 
