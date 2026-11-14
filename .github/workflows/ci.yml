@@ -22,7 +22,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      # SQL suites on the same Supabase Postgres image as production.
+      - run: tools/db_test.sh
+      # API tests: fresh DB, migrations applied by sqlx exactly like start-up.
+      - run: tools/db_test.sh --empty
       - run: cargo test
+        env:
+          HRMS_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:54330/postgres
 
   web:
     runs-on: ubuntu-latest

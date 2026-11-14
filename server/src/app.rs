@@ -1,16 +1,18 @@
-//! Router and cross-cutting middleware.
+//! Router, shared state and cross-cutting middleware.
 
 use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
-    extract::{Request, State},
-    http::{HeaderName, HeaderValue, StatusCode, header},
+    extract::{DefaultBodyLimit, FromRequest, Request, State, rejection::JsonRejection},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
-use serde_json::json;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use sqlx::PgPool;
 use subtle::ConstantTimeEq;
 use tower_http::{
     catch_panic::CatchPanicLayer,
@@ -20,25 +22,82 @@ use tower_http::{
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
+use uuid::Uuid;
 
-use crate::config::Config;
+use crate::{
+    auth::{self, token::CookieSpec},
+    config::Config,
+    error::{ApiError, ApiResult},
+    rpc::Catalog,
+};
 
 pub const PROXY_SECRET_HEADER: &str = "x-proxy-secret";
+pub const CLIENT_IP_HEADER: &str = "x-client-ip";
+pub const REQUESTED_WITH_HEADER: &str = "x-requested-with";
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+
+/// Auth bodies are tiny; RPC bodies may carry bulk imports.
+pub const AUTH_BODY_LIMIT: usize = 64 * 1024;
+pub const RPC_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
+#[derive(Clone)]
+pub struct Db {
+    pub pool: PgPool,
+    pub catalog: Arc<Catalog>,
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
+    pub cookie: CookieSpec,
+    /// None only in tests that exercise routing without a database.
+    pub db: Option<Db>,
 }
 
-pub fn router(config: Config) -> Router {
-    let state = AppState {
-        config: Arc::new(config),
-    };
+impl AppState {
+    pub fn new(config: Config, db: Option<Db>) -> Self {
+        let cookie = CookieSpec::for_origin(&config.app_origin);
+        Self {
+            config: Arc::new(config),
+            cookie,
+            db,
+        }
+    }
 
-    // Everything under /v1 is reachable only through the Vercel proxy.
+    pub fn db(&self) -> ApiResult<&Db> {
+        self.db
+            .as_ref()
+            .ok_or_else(|| ApiError::unavailable("The service is starting. Please try again."))
+    }
+}
+
+pub fn router(state: AppState) -> Router {
+    let auth_routes = Router::new()
+        .route("/auth/login", post(auth::routes::login))
+        .route("/auth/logout", post(auth::routes::logout))
+        .route("/auth/password", post(auth::routes::change_password))
+        .route("/auth/reauth", post(auth::routes::reauth))
+        .route("/admin/users", post(auth::routes::provision_user))
+        .route(
+            "/admin/users/{employee_id}/reset-password",
+            post(auth::routes::reset_password),
+        )
+        .layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT));
+
+    let rpc_routes = Router::new()
+        .route("/rpc/{name}", post(auth::routes::rpc))
+        .layer(DefaultBodyLimit::max(RPC_BODY_LIMIT));
+
+    // Everything under /v1 is reachable only through the Vercel proxy, and
+    // state-changing requests must come from our own web origin (CSRF).
     let v1 = Router::new()
         .route("/ping", get(ping))
+        .merge(auth_routes)
+        .merge(rpc_routes)
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_same_origin,
+        ))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_proxy));
 
     Router::new()
@@ -83,7 +142,7 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn ping() -> Json<serde_json::Value> {
+async fn ping() -> Json<Value> {
     Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
 }
 
@@ -104,5 +163,149 @@ async fn require_proxy(State(state): State<AppState>, req: Request, next: Next) 
         next.run(req).await
     } else {
         not_found().await
+    }
+}
+
+/// CSRF defence for cookie auth, on top of SameSite=Lax: unsafe methods need
+/// `Origin` equal to our web origin, or (when no Origin is sent) our custom
+/// header, which cross-site forms cannot set. `Sec-Fetch-Site: cross-site` is
+/// always refused.
+async fn require_same_origin(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    if is_safe(req.method()) || origin_ok(req.headers(), &state.config.app_origin) {
+        next.run(req).await
+    } else {
+        ApiError::new(
+            StatusCode::FORBIDDEN,
+            "ORIGIN_REJECTED",
+            "This request did not come from the HRMS app.",
+        )
+        .into_response()
+    }
+}
+
+fn is_safe(m: &Method) -> bool {
+    matches!(*m, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+pub fn origin_ok(headers: &HeaderMap, app_origin: &str) -> bool {
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|v| v.as_bytes() == b"cross-site")
+    {
+        return false;
+    }
+    match headers.get(header::ORIGIN) {
+        Some(o) => o.as_bytes() == app_origin.as_bytes(),
+        None => headers
+            .get(REQUESTED_WITH_HEADER)
+            .is_some_and(|v| v.as_bytes() == b"hrms-web"),
+    }
+}
+
+/// The request id set by SetRequestIdLayer (a UUID unless a client sent junk).
+pub fn request_id(headers: &HeaderMap) -> Uuid {
+    headers
+        .get(REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| Uuid::parse_str(v).ok())
+        .unwrap_or_else(Uuid::new_v4)
+}
+
+/// JSON body extractor whose failures use our error shape and status codes.
+pub struct JsonBody<T>(pub T);
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for JsonBody<T> {
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(v)) => Ok(Self(v)),
+            Err(e) => Err(json_rejection(e)),
+        }
+    }
+}
+
+fn json_rejection(e: JsonRejection) -> ApiError {
+    match e {
+        JsonRejection::MissingJsonContentType(_) => ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "UNSUPPORTED_MEDIA_TYPE",
+            "Send JSON (Content-Type: application/json).",
+        ),
+        JsonRejection::BytesRejection(_) => ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "REQUEST_TOO_LARGE",
+            "The request is too large.",
+        ),
+        JsonRejection::JsonSyntaxError(_) => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_JSON",
+            "The request body is not valid JSON.",
+        ),
+        _ => ApiError::validation("Some values are missing or have the wrong type."),
+    }
+}
+
+/// `{"data": .., "version": null, "request_id": ..}` like the HRMS Edge Functions.
+pub fn ok(data: Value, request_id: Uuid) -> Json<Value> {
+    Json(json!({ "data": data, "version": null, "request_id": request_id }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn h(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        for (k, v) in pairs {
+            m.insert(*k, HeaderValue::from_static(v));
+        }
+        m
+    }
+
+    const O: &str = "https://web-hrms.vercel.app";
+
+    #[test]
+    fn origin_rules() {
+        assert!(origin_ok(&h(&[("origin", O)]), O));
+        assert!(!origin_ok(&h(&[("origin", "https://evil.example")]), O));
+        assert!(!origin_ok(
+            &h(&[("origin", "https://web-hrms.vercel.app.evil.example")]),
+            O
+        ));
+        assert!(!origin_ok(&h(&[("origin", "null")]), O));
+        assert!(!origin_ok(&h(&[]), O), "no origin and no custom header");
+        assert!(origin_ok(&h(&[("x-requested-with", "hrms-web")]), O));
+        assert!(!origin_ok(&h(&[("x-requested-with", "XMLHttpRequest")]), O));
+        assert!(!origin_ok(
+            &h(&[("origin", O), ("sec-fetch-site", "cross-site")]),
+            O
+        ));
+        assert!(origin_ok(
+            &h(&[("origin", O), ("sec-fetch-site", "same-origin")]),
+            O
+        ));
+        assert!(!origin_ok(
+            &h(&[
+                ("origin", "https://evil.example"),
+                ("x-requested-with", "hrms-web")
+            ]),
+            O
+        ));
+    }
+
+    #[test]
+    fn request_id_falls_back_to_new_uuid() {
+        let id = Uuid::new_v4();
+        let mut m = HeaderMap::new();
+        m.insert(
+            "x-request-id",
+            HeaderValue::from_str(&id.to_string()).unwrap(),
+        );
+        assert_eq!(request_id(&m), id);
+        assert_ne!(
+            request_id(&h(&[("x-request-id", "junk")])).to_string(),
+            "junk"
+        );
     }
 }

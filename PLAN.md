@@ -229,7 +229,7 @@ PROXY_SECRET=               # >= 32 chars, same value on Render
 DATABASE_URL=postgres://...new supabase project pooler (session mode, 5432)...
 DATABASE_MAX_CONNECTIONS=5
 APP_ORIGIN=https://web-hrms.vercel.app
-JWT_SECRET=                 # >= 64 random bytes
+APP_SECRET=                 # >= 32 chars; keys IP hashes (sessions are opaque cookies, not JWTs)
 VAPID_PRIVATE_KEY=
 VAPID_SUBJECT=mailto:<admin contact>
 WEBAUTHN_RP_ID=web-hrms.vercel.app
@@ -249,8 +249,8 @@ ORG_CODE=  ORG_NAME=  ADMIN_EMPLOYEE_CODE=  ADMIN_NAME=  ADMIN_PASSWORD=
 | Phase | Deliverable | Done when |
 |---|---|---|
 | P0 Scaffold ✅ 2026-11-13 | Folder tree, workspaces, `.gitignore`, `.env.example`/`.env.local`, CI, Dockerfile, `/healthz`, Vercel→Render proxy, PWA manifest + SW | 9 Rust tests, clippy, ESLint, tsc and `next build` pass. Proxy verified end-to-end. Image 46 MB, ~2.3 MB idle RAM |
-| P1 DB | Ported migrations + `actor_id()` + pgTAP suites from both repos | All ported pgTAP assertions pass |
-| P2 Auth | Login, cookies, refresh rotation, password change gate, reauth grants, rate limits, bootstrap admin | Auth integration tests incl. old-refresh-token reuse |
+| P1 DB ✅ 2026-11-14 | 42 ported migrations (HRMS + fingertipssl, zero logic changes via the `iam` shim) + 6 web-hrms migrations (device bridge, live events, Web Push tokens, sessions, jobs) | 27 SQL suites, 991 assertions on the Supabase Postgres 17 image |
+| P2 Auth ✅ 2026-11-14 | Opaque `__Host-` cookie sessions (no JWT/refresh tokens: revocation is instant), argon2id, login/logout, password change gate, reauth grants, rate limits, provisioning + reset, RPC gateway, Origin/CSRF checks, job scheduler, `bootstrap` | 33 unit + 28 API tests against a real DB (sqlx migrations, cookies, CSRF, rate limits, saga, RBAC) |
 | P3 Shell + design | Tokens, nav, cards, pill tabs, accordion, login/password screens, PWA manifest + SW | Side-by-side screenshot check vs Android app on 390×844 |
 | P4 Attendance | PWA punch (geo + passkey + IP), calendar, day detail, corrections, late/WFH requests, hours report | Punch rules tests; late/deduction tests |
 | P5 eSSL | Rust iclock port + Worker + today/live/unmatched/devices screens + commands | Ported `protocol.test.ts` cases + simulator end-to-end + real device on LAN |

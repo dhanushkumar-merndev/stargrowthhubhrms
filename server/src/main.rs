@@ -1,4 +1,10 @@
-use hrms_server::{app, config::Config};
+use std::sync::Arc;
+
+use hrms_server::{
+    app::{self, AppState, Db},
+    config::Config,
+    db, rpc,
+};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
@@ -29,12 +35,38 @@ async fn main() {
     };
     let addr = config.addr;
 
+    let Some(url) = config.database_url.clone() else {
+        tracing::error!("configuration error: DATABASE_URL is not set");
+        std::process::exit(1);
+    };
+    let pool = match db::connect(&url, config.database_max_connections).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("database connection failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = db::migrate(&pool).await {
+        tracing::error!("migrations failed: {e}");
+        std::process::exit(1);
+    }
+    let catalog = match rpc::Catalog::load(&pool).await {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            tracing::error!("cannot read the RPC catalog: {e}");
+            std::process::exit(1);
+        }
+    };
+    tracing::info!(functions = catalog.public_len(), "rpc catalog loaded");
+    hrms_server::jobs::spawn(pool.clone());
+    let state = AppState::new(config, Some(Db { pool, catalog }));
+
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| panic!("cannot bind {addr}: {e}"));
     tracing::info!(%addr, "hrms-server listening");
 
-    axum::serve(listener, app::router(config))
+    axum::serve(listener, app::router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");

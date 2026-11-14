@@ -3,7 +3,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use hrms_server::{
-    app::{PROXY_SECRET_HEADER, router},
+    app::{AppState, PROXY_SECRET_HEADER, router},
     config::Config,
 };
 use http_body_util::BodyExt;
@@ -15,10 +15,11 @@ fn app() -> axum::Router {
     let config = Config::from_lookup(|k| match k {
         "APP_ORIGIN" => Some("https://web-hrms.vercel.app".into()),
         "PROXY_SECRET" => Some(SECRET.into()),
+        "APP_SECRET" => Some("test-app-secret-fedcba9876543210fedcba".into()),
         _ => None,
     })
     .unwrap();
-    router(config)
+    router(AppState::new(config, None))
 }
 
 async fn send(req: Request<Body>) -> (StatusCode, axum::http::HeaderMap, String) {
