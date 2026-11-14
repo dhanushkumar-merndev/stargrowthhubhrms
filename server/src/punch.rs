@@ -473,6 +473,15 @@ mod tests {
              6f1c1b5e-0000-4000-8000-000000000005\n12.9716000\n-77.5946000\n5.00\n1763100000000"
         );
         assert!(!p.ends_with('\n'));
+        // Golden value shared with web/test/punch.test.ts (cross-language check).
+        assert_eq!(
+            crate::webauthn::punch_challenge(&p),
+            "9kisx0wwW07R3mlitQDtsWr62EvIZKfU6tMbVZxbo6k"
+        );
+        assert_eq!(
+            crate::webauthn::registration_challenge("ABC", "n1"),
+            "cw0rtAMvrNXDiOUYeCgMqt_Spm3pH5PwLyl5KG4X_Bc"
+        );
     }
 
     #[test]
