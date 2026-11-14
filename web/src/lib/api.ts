@@ -65,6 +65,10 @@ export const MESSAGES: Record<string, string> = {
   RATE_LIMITED: "Too many attempts. Wait a moment and try again.",
   UNAVAILABLE: "The service is busy. Please try again.",
   REQUEST_TOO_LARGE: "That is too large to send.",
+  FILE_TOO_LARGE: "Files must be at most 5 MB.",
+  UPLOAD_UNAVAILABLE: "File storage is unavailable. Try again later.",
+  INVALID_FILE_TYPE: "Use a PDF, JPG or PNG file.",
+  ARCHIVED: "This file is no longer available.",
   SELF_APPROVAL_FORBIDDEN: "You cannot approve your own request.",
 };
 const OFFLINE = "You appear to be offline. Check your connection and try again.";
@@ -91,21 +95,27 @@ export async function post<T>(path: string, body?: unknown, init?: { signal?: Ab
   } catch {
     json = null;
   }
-  if (!res.ok) {
-    const err = (json as { error?: Record<string, unknown> } | null)?.error ?? {};
-    const e = new ApiError(
-      typeof err.code === "string" ? err.code : fallbackCode(res.status),
-      friendly(typeof err.code === "string" ? err.code : fallbackCode(res.status), typeof err.message === "string" ? err.message : ""),
-      res.status,
-      isRecord(err.field_errors) ? (err.field_errors as FieldErrors) : {},
-      typeof err.retryable === "boolean" ? err.retryable : res.status >= 500 || res.status === 429,
-      typeof err.request_id === "string" ? err.request_id : undefined,
-    );
-    if (e.isSignedOut || e.needsPasswordChange) listeners.forEach((l) => l(e));
-    throw e;
-  }
+  if (!res.ok) throw toApiError(res.status, json);
   return json as T;
 }
+
+/** Builds the ApiError for a failed response and tells the session listeners. */
+export function toApiError(status: number, json: unknown): ApiError {
+  const err = (json as { error?: Record<string, unknown> } | null)?.error ?? {};
+  const code = typeof err.code === "string" ? err.code : fallbackCode(status);
+  const e = new ApiError(
+    code,
+    friendly(code, typeof err.message === "string" ? err.message : ""),
+    status,
+    isRecord(err.field_errors) ? (err.field_errors as FieldErrors) : {},
+    typeof err.retryable === "boolean" ? err.retryable : status >= 500 || status === 429,
+    typeof err.request_id === "string" ? err.request_id : undefined,
+  );
+  if (e.isSignedOut || e.needsPasswordChange) listeners.forEach((l) => l(e));
+  return e;
+}
+
+export const OFFLINE_MESSAGE = OFFLINE;
 
 function friendly(code: string, message: string): string {
   if (message && message !== code) return message;
@@ -116,7 +126,7 @@ function fallbackCode(status: number): string {
   if (status === 401) return "AUTH_REQUIRED";
   if (status === 403) return "ACCESS_DENIED";
   if (status === 404) return "NOT_FOUND";
-  if (status === 413) return "REQUEST_TOO_LARGE";
+  if (status === 413) return "FILE_TOO_LARGE";
   if (status === 429) return "RATE_LIMITED";
   if (status === 503 || status === 502 || status === 504) return "UNAVAILABLE";
   return "INTERNAL";

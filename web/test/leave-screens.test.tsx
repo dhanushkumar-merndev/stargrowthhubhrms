@@ -146,13 +146,62 @@ describe("Apply for leave", () => {
     expect(screen.getByRole("option", { name: /Loss of Pay · unpaid/ })).toBeInTheDocument();
   });
 
-  it("a type needing a document is blocked on the web", async () => {
+  it("a type needing a document asks for one, uploads it and sends its id", async () => {
     const user = userEvent.setup();
-    mockFetch(base());
+    const calls = mockFetch({ ...base(), "/files": () => ok({ file_version_id: "fv-1" }), "/rpc/save_leave_request": () => ok(detail()) });
     wrap(<LeaveApply now={NOW} />);
     await user.selectOptions(await screen.findByLabelText("Leave type"), "sl");
-    expect(screen.getByText(/needs a supporting document/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+    const from = screen.getByLabelText("From");
+    await user.clear(from);
+    await user.type(from, "2026-11-18");
+    await user.type(screen.getByLabelText("Reason"), "Fever");
+    await user.click(screen.getByRole("button", { name: "Send request" }));
+    expect(await screen.findByText("Attach a supporting document.")).toBeInTheDocument();
+    expect(calls.some((c) => c.path === "/rpc/save_leave_request")).toBe(false);
+    await user.upload(screen.getByLabelText("Supporting document"), new File(["%PDF-1.4"], "note.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "Send request" }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/rpc/save_leave_request")).toBe(true));
+    const up = calls.find((c) => c.path === "/files")!;
+    expect(up.query.get("class")).toBe("leave_attachment");
+    expect(calls.find((c) => c.path === "/rpc/save_leave_request")!.body).toMatchObject({ p_attachment_file_version_id: "fv-1" });
+  });
+
+  it("a medical type uploads as a medical attachment and rejects a wrong file type", async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    const MED = { ...SICK, id: "ml", code: "ML", name: "Medical Leave", attachment_class: "medical" };
+    const calls = mockFetch({ ...base(), "/rpc/list_leave_types": () => ok([CL, MED]), "/files": () => ok({ file_version_id: "fv-2" }), "/rpc/save_leave_request": () => ok(detail()) });
+    wrap(<LeaveApply now={NOW} />);
+    await user.selectOptions(await screen.findByLabelText("Leave type"), "ml");
+    expect(screen.getByText(/Only HR sees it/)).toBeInTheDocument();
+    const input = screen.getByLabelText("Supporting document");
+    await user.upload(input, new File(["x"], "virus.exe", { type: "application/x-msdownload" }));
+    expect(screen.getByText("Use a PDF, JPG or PNG file.")).toBeInTheDocument();
+    await user.upload(input, new File(["jpg"], "cert.jpg", { type: "image/jpeg" }));
+    const from = screen.getByLabelText("From");
+    await user.clear(from);
+    await user.type(from, "2026-11-18");
+    await user.type(screen.getByLabelText("Reason"), "Surgery");
+    await user.click(screen.getByRole("button", { name: "Send request" }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/rpc/save_leave_request")).toBe(true));
+    expect(calls.find((c) => c.path === "/files")!.query.get("class")).toBe("medical_attachment");
+  });
+
+  it("a failed save does not upload the same file twice on retry", async () => {
+    const user = userEvent.setup();
+    let n = 0;
+    const calls = mockFetch({ ...base(), "/files": () => ok({ file_version_id: "fv-3" }), "/rpc/save_leave_request": () => (++n === 1 ? fail(500, "INTERNAL", "Try again") : ok(detail())) });
+    wrap(<LeaveApply now={NOW} />);
+    await user.selectOptions(await screen.findByLabelText("Leave type"), "sl");
+    const from = screen.getByLabelText("From");
+    await user.clear(from);
+    await user.type(from, "2026-11-18");
+    await user.type(screen.getByLabelText("Reason"), "Fever");
+    await user.upload(screen.getByLabelText("Supporting document"), new File(["%PDF"], "n.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "Send request" }));
+    expect(await screen.findByText("Try again")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send request" }));
+    await waitFor(() => expect(calls.filter((c) => c.path === "/rpc/save_leave_request")).toHaveLength(2));
+    expect(calls.filter((c) => c.path === "/files")).toHaveLength(1);
   });
 
   it("keeps the operation key across a network retry and maps server field errors", async () => {

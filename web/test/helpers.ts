@@ -17,11 +17,11 @@ export function ctx(role: "employee" | "hr" | "admin", extra: Partial<SessionCon
 
 /** Routes fetch calls by URL path; each handler returns [status, body]. */
 export function mockFetch(routes: Record<string, (body: unknown) => [number, unknown] | Promise<[number, unknown]>>) {
-  const calls: { path: string; body: unknown; init: RequestInit }[] = [];
+  const calls: { path: string; query: URLSearchParams; body: unknown; init: RequestInit }[] = [];
   const fn = vi.fn(async (url: string, init: RequestInit) => {
-    const path = url.replace(/^\/api\/v1/, "");
-    const body = init.body ? JSON.parse(init.body as string) : undefined;
-    calls.push({ path, body, init });
+    const [path, qs = ""] = url.replace(/^\/api\/v1/, "").split("?");
+    const body = typeof init.body === "string" && init.body ? JSON.parse(init.body) : init.body;
+    calls.push({ path, query: new URLSearchParams(qs), body, init });
     const h = routes[path];
     if (!h) return new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: "Not found." } }), { status: 404 });
     const [status, out] = await h(body);

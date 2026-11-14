@@ -29,6 +29,8 @@ import { type RequestDetail, type RequestRow, currentPayload, requestDates, requ
 import { caps } from "@/lib/roles";
 import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
+import { type FileClass, uploadFile } from "@/lib/files";
+import { FilePicker } from "../files";
 import { Art, Banner, Button, EmptyState, ErrorState, LoadingState, PageTitle, SectionCard, StatusChip, TextArea, TextField, cx } from "../ui";
 
 const msg = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
@@ -209,6 +211,10 @@ export function LeaveApply({ editId, now = new Date() }: { editId?: string; now?
   const [startSlot, setStartSlot] = useState<Slot>("FULL");
   const [endSlot, setEndSlot] = useState<Slot>("FULL");
   const [reason, setReason] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [fileProblem, setFileProblem] = useState<string | null>(null);
+  const [kept, setKept] = useState<string | null>(null);
+  const uploaded = useRef<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -228,6 +234,7 @@ export function LeaveApply({ editId, now = new Date() }: { editId?: string; now?
     setStartSlot((p.start_slot as Slot) ?? "FULL");
     setEndSlot((p.end_slot as Slot) ?? "FULL");
     setReason(String(p.reason ?? ""));
+    setKept(p.attachment_file_version_id ? String(p.attachment_file_version_id) : null);
   }, [existing.data, today]);
 
   const type = types.data?.find((t) => t.id === typeId);
@@ -243,13 +250,14 @@ export function LeaveApply({ editId, now = new Date() }: { editId?: string; now?
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const v = leaveFormErrors({ typeId, start, end, reason, hasAttachment: false }, type, today);
+    const v = leaveFormErrors({ typeId, start, end, reason, hasAttachment: !!file || !!kept }, type, today);
     setErrors(v);
     setError(null);
-    if (Object.keys(v).length) return;
+    if (Object.keys(v).length || fileProblem) return;
     setBusy(true);
     op.current ??= newOperationId();
     try {
+      if (file && !uploaded.current) uploaded.current = await uploadFile(file, { cls: attachmentClass(type) });
       const r = await rpc<RequestDetail>("save_leave_request", {
         p_request_id: editId ?? null,
         p_leave_type_id: typeId,
@@ -258,7 +266,7 @@ export function LeaveApply({ editId, now = new Date() }: { editId?: string; now?
         p_start_slot: slots.start,
         p_end_slot: single ? slots.start : slots.end,
         p_reason: reason.trim(),
-        p_attachment_file_version_id: null,
+        p_attachment_file_version_id: file ? uploaded.current : kept,
         p_submit: true,
         p_expected_version: existing.data?.version ?? null,
         p_operation_key: op.current,
@@ -363,10 +371,27 @@ export function LeaveApply({ editId, now = new Date() }: { editId?: string; now?
                 </div>
               ))}
             <TextArea label="Reason" value={reason} onChange={setReason} error={errors.reason} />
-            {type?.requires_attachment && (
-              <Banner tone="warning">{type.name} needs a supporting document. Uploading documents is not available on the web yet; use the Android app for this leave type.</Banner>
+            {kept && !file ? (
+              <div className="flex items-center justify-between rounded-input border border-border bg-surface px-4 py-3">
+                <span className="text-body-md">Supporting document attached</span>
+                <Button variant="text" type="button" onClick={() => setKept(null)}>
+                  Replace
+                </Button>
+              </div>
+            ) : (
+              <FilePicker
+                label={type?.requires_attachment ? "Supporting document" : "Supporting document (optional)"}
+                cls={attachmentClass(type)}
+                file={file}
+                error={fileProblem ?? errors.attachment}
+                hint={type?.attachment_class === "medical" ? "Medical certificate: PDF, JPG or PNG up to 5 MB. Only HR sees it." : "PDF, JPG or PNG up to 5 MB."}
+                onChange={(f, p) => {
+                  setFile(f);
+                  setFileProblem(p);
+                  uploaded.current = null;
+                }}
+              />
             )}
-            {errors.attachment && !type?.requires_attachment && <Banner>{errors.attachment}</Banner>}
             {(preview || loading) && (
               <SectionCard className={previewErrors.length ? "bg-error-soft" : "bg-leave-card"}>
                 <div aria-live="polite">
@@ -403,7 +428,7 @@ export function LeaveApply({ editId, now = new Date() }: { editId?: string; now?
             <p className="text-body-sm text-text-secondary">
               {isAdmin ? "As Admin, your leave is approved straight away. You can revoke it later with a reason." : "You can edit it until your approver opens it."}
             </p>
-            <Button type="submit" busy={busy} disabled={!!type?.requires_attachment || previewErrors.length > 0}>
+            <Button type="submit" busy={busy} disabled={previewErrors.length > 0}>
               {editId ? "Save and send" : "Send request"}
             </Button>
             {editId && (
@@ -497,4 +522,9 @@ export function HolidayCalendar({ initialYear, now = new Date() }: { initialYear
       </div>
     </>
   );
+}
+
+/** Which upload class a leave type's document uses. */
+export function attachmentClass(type: { attachment_class: string | null } | undefined): FileClass {
+  return type?.attachment_class === "medical" ? "medical_attachment" : "leave_attachment";
 }

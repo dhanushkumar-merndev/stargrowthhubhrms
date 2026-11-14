@@ -2620,3 +2620,71 @@ async fn machine_photos_are_stored_and_only_hr_can_view_them() {
     assert_eq!(t.rejections(&sn, "photo_out_of_window").await, 1);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn bank_proof_upload_lets_the_bank_request_through() {
+    let (store, _dir) = temp_store();
+    let Some(t) = setup_with(Some(store)).await else {
+        eprintln!("SKIP: HRMS_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = t.admin().await;
+    let (asha, emp) = t.employee(&admin, "B001").await;
+    let (_ravi, other) = t.employee(&admin, "B002").await;
+    let up = |c: String| {
+        let t = &t;
+        async move {
+            let r = t
+                .upload(
+                    Some(&c),
+                    "class=correction_attachment&filename=cheque.pdf",
+                    "application/pdf",
+                    test_pdf(""),
+                )
+                .await;
+            assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+            r.body["data"]["file_version_id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    let args = |proof: &str| {
+        json!({ "p_request_id": null, "p_bank_name": "HDFC Bank", "p_account_holder": "Asha Rao",
+                "p_account_number": "123456789012", "p_ifsc": "HDFC0001234", "p_reason": null,
+                "p_attachment_file_version_id": proof, "p_expected_version": null,
+                "p_operation_key": Uuid::new_v4() })
+    };
+
+    // the validated proof is the record's current version
+    let proof = up(emp.clone()).await;
+    let current: bool = sqlx::query_scalar(
+        "select r.current_version_id = v.id and r.owner_employee_id = $2 from hrms.file_versions v
+           join hrms.file_records r on r.id = v.file_record_id where v.id = $1::uuid",
+    )
+    .bind(&proof)
+    .bind(asha)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert!(current);
+
+    // someone else's proof is refused; your own goes through
+    let foreign = up(other.clone()).await;
+    let r = t
+        .rpc("save_bank_details_request", args(&foreign), &emp)
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    assert_eq!(
+        r.body["error"]["field_errors"]["attachment"],
+        "Upload the proof again"
+    );
+    let r = t.rpc("save_bank_details_request", args(&proof), &emp).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["data"]["state"], "submitted", "{}", r.body);
+
+    // a second pending request is locked
+    let again = up(emp.clone()).await;
+    let r = t.rpc("save_bank_details_request", args(&again), &emp).await;
+    assert_eq!(r.body["error"]["code"], "REQUEST_LOCKED", "{}", r.body);
+}
