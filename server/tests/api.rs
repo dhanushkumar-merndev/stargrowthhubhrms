@@ -2688,3 +2688,34 @@ async fn bank_proof_upload_lets_the_bank_request_through() {
     let r = t.rpc("save_bank_details_request", args(&again), &emp).await;
     assert_eq!(r.body["error"]["code"], "REQUEST_LOCKED", "{}", r.body);
 }
+
+#[tokio::test]
+async fn archive_routes_are_admin_only_and_never_leak_files() {
+    let (store, _dir) = temp_store();
+    let Some(t) = setup_with(Some(store)).await else {
+        eprintln!("SKIP: HRMS_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = t.admin().await;
+    let (_asha, emp) = t.employee(&admin, "A001").await;
+    let (job, ver) = (Uuid::new_v4(), Uuid::new_v4());
+    let path = format!("/v1/archive/{job}/files/{ver}");
+
+    // no session
+    let r = t.send(t.base(Method::GET, &path).body(Body::empty()).unwrap()).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    // an employee cannot read export files or drive a cleanup
+    let (st, h, _) = t.fetch(&emp, &path).await;
+    assert!(st == StatusCode::FORBIDDEN || st == StatusCode::NOT_FOUND, "{st}");
+    assert!(h.get("x-sha256").is_none());
+    let r = t.post(&format!("/v1/archive/cleanup/{job}"), json!({}), Some(&emp)).await;
+    assert!(r.status == StatusCode::FORBIDDEN || r.status == StatusCode::NOT_FOUND, "{}", r.body);
+    // an Admin gets a clean error for an unknown job, never bytes
+    let (st, _, _) = t.fetch(&admin, &path).await;
+    assert!(st.is_client_error(), "{st}");
+    let r = t.post(&format!("/v1/archive/cleanup/{job}?reconcile_only=true"), json!({}), Some(&admin)).await;
+    assert!(r.status.is_client_error(), "{}", r.body);
+    // malformed ids are rejected by the router
+    let (st, _, _) = t.fetch(&admin, "/v1/archive/not-a-uuid/files/x").await;
+    assert!(st.is_client_error(), "{st}");
+}

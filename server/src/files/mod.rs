@@ -36,7 +36,7 @@ use crate::{
 
 const MIMES: &[&str] = &["application/pdf", "image/jpeg", "image/png", "image/webp"];
 
-fn actor(s: &Session, extra: Value) -> Value {
+pub(crate) fn actor(s: &Session, extra: Value) -> Value {
     let mut m = serde_json::Map::new();
     m.insert("p_auth_user_id".into(), json!(s.claims.sub));
     m.insert("p_session_id".into(), json!(s.claims.session_id));
@@ -47,7 +47,7 @@ fn actor(s: &Session, extra: Value) -> Value {
     Value::Object(m)
 }
 
-fn store(state: &AppState) -> ApiResult<&Store> {
+pub(crate) fn store(state: &AppState) -> ApiResult<&Store> {
     state.store.as_deref().ok_or_else(|| {
         let mut e = ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -59,7 +59,7 @@ fn store(state: &AppState) -> ApiResult<&Store> {
     })
 }
 
-fn storage_down(e: StoreError) -> ApiError {
+pub(crate) fn storage_down(e: StoreError) -> ApiError {
     tracing::error!(error = %e, "object storage");
     let mut err = ApiError::new(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -268,7 +268,7 @@ pub struct AccessQuery {
     purpose: Option<String>,
 }
 
-fn file_response(
+pub(crate) fn file_response(
     bytes: Vec<u8>,
     mime: &str,
     disposition_value: &str,

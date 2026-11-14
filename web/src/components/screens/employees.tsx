@@ -5,7 +5,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, newOperationId, post, rpc } from "@/lib/api";
 import { dayLabel, todayIn } from "@/lib/attendance";
 import type { LeaveType } from "@/lib/leave";
@@ -40,60 +40,15 @@ import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
 import { Avatar, FileViewer } from "../files";
 import { Banner, Button, EmptyState, ErrorState, KeyValue, LoadingState, PageTitle, PillTabs, SectionCard, Sheet, StatusChip, TextArea, TextField, cx } from "../ui";
+import { withReauth } from "../reauth";
+import { type Saved, Select, SheetForm, activeOpts, useAction } from "../forms";
 import { type DocItem, DocumentList, RemoveSheet, RenameSheet, SalaryCard, UploadDocumentSheet } from "./payroll";
 
 const msg = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
 const PAGE = 25;
 
-export function Select({ label, value, onChange, options, error, placeholder }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; error?: string | null; placeholder?: string }) {
-  const id = useId();
-  return (
-    <div>
-      <label htmlFor={id} className="mb-1.5 block text-body-md font-medium text-text-secondary">
-        {label}
-      </label>
-      <select
-        id={id}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-invalid={error ? true : undefined}
-        className={cx("min-h-12 w-full rounded-input border bg-surface px-4", error ? "border-error" : "border-border")}
-      >
-        {placeholder !== undefined && <option value="">{placeholder}</option>}
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-      {error && <p className="mt-1 text-body-sm text-error">{error}</p>}
-    </div>
-  );
-}
 
-const activeOpts = (items: (Ref & { active: boolean })[] | undefined, keep?: string | null) =>
-  (items ?? []).filter((x) => x.active || x.id === keep).map((x) => ({ value: x.id, label: x.name }));
 
-/** Runs one async action for a sheet: busy flag, error text and field errors. */
-function useAction() {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [fields, setFields] = useState<Record<string, string>>({});
-  const run = async (fn: () => Promise<void>, fallback: string) => {
-    setBusy(true);
-    setError(null);
-    setFields({});
-    try {
-      await fn();
-    } catch (x) {
-      if (x instanceof ApiError) setFields(x.fieldErrors);
-      setError(x instanceof ApiError && x.code === "STALE_VERSION" ? "This record changed since you opened it. Close and try again." : msg(x, fallback));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return { busy, error, fields, setError, run };
-}
 
 /* ───────────────────────── List ───────────────────────── */
 
@@ -656,28 +611,7 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
   );
 }
 
-function SheetForm({ title, submit, busy, error, onClose, onSubmit, children }: { title: string; submit: string; busy: boolean; error: string | null; onClose: () => void; onSubmit: () => void; children: ReactNode }) {
-  return (
-    <Sheet title={title} onClose={onClose}>
-      <form
-        noValidate
-        className="flex flex-col gap-3"
-        onSubmit={(ev) => {
-          ev.preventDefault();
-          onSubmit();
-        }}
-      >
-        {error && <Banner>{error}</Banner>}
-        {children}
-        <Button type="submit" busy={busy}>
-          {submit}
-        </Button>
-      </form>
-    </Sheet>
-  );
-}
 
-type Saved = { onClose: () => void; onSaved: () => Promise<void> };
 
 function WorkSheet({ e, onClose, onSaved }: { e: EmployeeDetailData } & Saved) {
   const structure = useRpc<OrgStructure>("list_org_structure", {});
@@ -767,7 +701,7 @@ function AccessSheet({ e, isAdmin, onClose, onSaved }: { e: EmployeeDetailData; 
   const save = () => {
     if (reason.trim().length < 3) return a.setError("Give a reason.");
     a.run(async () => {
-      await rpc("set_employee_access", { p_employee_id: e.id, p_role: role, p_label: label, p_reason: reason.trim() });
+      await withReauth("role.elevate", e.id, () => rpc("set_employee_access", { p_employee_id: e.id, p_role: role, p_label: label, p_reason: reason.trim() }));
       await onSaved();
     }, "Could not change access.");
   };
@@ -801,7 +735,7 @@ function ResetSheet({ e, onClose }: { e: EmployeeDetailData; onClose: () => void
       onClose={onClose}
       onSubmit={() =>
         a.run(async () => {
-          const r = await post<ProvisionResult>(`/admin/users/${e.id}/reset-password`, { operation_id: op.current });
+          const r = await withReauth("credentials.reset_admin", e.id, () => post<ProvisionResult>(`/admin/users/${e.id}/reset-password`, { operation_id: op.current }));
           if (!r.data.temporary_password) throw new Error("No password was returned. Try again.");
           setPw(r.data.temporary_password);
         }, "Could not reset the password.")

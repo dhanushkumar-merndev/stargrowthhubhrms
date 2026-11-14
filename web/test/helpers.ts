@@ -25,7 +25,7 @@ export function mockFetch(routes: Record<string, (body: unknown) => [number, unk
     const h = routes[path];
     if (!h) return new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: "Not found." } }), { status: 404 });
     const [status, out] = await h(body);
-    return new Response(typeof out === "string" ? out : JSON.stringify(out), { status });
+    return new Response(typeof out === "string" || ArrayBuffer.isView(out) ? (out as BodyInit) : JSON.stringify(out), { status });
   });
   vi.stubGlobal("fetch", fn);
   return calls;

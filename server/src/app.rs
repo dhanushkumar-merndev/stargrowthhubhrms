@@ -110,6 +110,8 @@ pub fn router(state: AppState) -> Router {
         .route("/files", post(crate::files::upload))
         .route("/files/{version}", get(crate::files::download))
         .route("/device-photos/{punch}", get(crate::files::device_photo))
+        .route("/archive/{job}/files/{version}", get(crate::archive::export_file))
+        .route("/archive/cleanup/{job}", post(crate::archive::cleanup_batch))
         .layer(DefaultBodyLimit::disable());
 
     let rpc_routes = Router::new()

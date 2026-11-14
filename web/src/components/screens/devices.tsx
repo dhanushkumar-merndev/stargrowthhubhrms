@@ -648,7 +648,7 @@ export function Machines({ isAdmin }: { isAdmin: boolean }) {
   const rejections = useRpc<IngestRejection[]>("list_device_ingest_rejections", { p_limit: 50 });
   const users = useRpc<MachineUser[]>("list_device_users");
   const commands = useRpc<DeviceCommand[]>("list_device_commands", { p_employee_id: null, p_limit: 30 });
-  const offices = useRpc<{ id: string; name: string }[]>(isAdmin ? "list_offices" : null);
+  const offices = useRpc<{ id: string; name: string; active?: boolean }[]>(isAdmin ? "list_offices" : null);
   const [editing, setEditing] = useState<AttendanceDevice | "new" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -791,7 +791,7 @@ export function Machines({ isAdmin }: { isAdmin: boolean }) {
       {editing && (
         <MachineForm
           device={editing === "new" ? null : editing}
-          offices={offices.data ?? []}
+          offices={(offices.data ?? []).filter((o) => o.active !== false)}
           onClose={() => setEditing(null)}
           onSaved={(m) => {
             setEditing(null);
