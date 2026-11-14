@@ -37,6 +37,10 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Next's gzip buffers proxied Server-Sent Events (/api/v1/live) until the
+  // stream ends. Vercel's edge compresses responses itself (and streams SSE),
+  // and the Rust API compresses its own JSON, so nothing is lost.
+  compress: false,
   reactStrictMode: true,
   turbopack: {
     rules: {

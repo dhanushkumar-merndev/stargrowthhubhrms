@@ -253,7 +253,7 @@ ORG_CODE=  ORG_NAME=  ADMIN_EMPLOYEE_CODE=  ADMIN_NAME=  ADMIN_PASSWORD=
 | P2 Auth ✅ 2026-11-14 | Opaque `__Host-` cookie sessions (no JWT/refresh tokens: revocation is instant), argon2id, login/logout, password change gate, reauth grants, rate limits, provisioning + reset, RPC gateway, Origin/CSRF checks, job scheduler, `bootstrap` | 33 unit + 28 API tests against a real DB (sqlx migrations, cookies, CSRF, rate limits, saga, RBAC) |
 | P3 Shell + design ✅ 2026-11-14 | Tokens, jelly nav, cards, Action scopes, Explore accordion, login/password/settings (devices) screens, session gate, API client | 68 Vitest tests (gate, RBAC menus, forms, API errors); 390×844 screenshots checked; full stack smoke test through the proxy |
 | P4 Attendance | PWA punch (geo + passkey + IP), calendar, day detail, corrections, late/WFH requests, hours report | Punch rules tests; late/deduction tests ✅ 2026-11-14 |
-| P5 eSSL | Rust iclock port + Worker + today/live/unmatched/devices screens + commands | Ported `protocol.test.ts` cases + simulator end-to-end + real device on LAN |
+| P5 eSSL | Rust iclock port + Worker + today/live/unmatched/devices screens + commands | Ported `protocol.test.ts` cases + simulator end-to-end ✅ 2026-11-14 (real machine on LAN: needs the owner's device) |
 | P6 Leave & approvals | Leave apply (PL/ML/UL), balances, approval pool, request history | Ported leave/approval pgTAP |
 | P7 People & payroll | Profile, directory, employees CRUD/import, salary, bank-detail maker-checker, payslips, documents (R2) | 5 MB/MIME/sha tests; role tests per endpoint |
 | P8 Admin | Org, offices, shifts, teams, roles, policies, holidays, outside-work, Sheet sync, audit, archive/cleanup | Admin-only tests; last-admin guard |
