@@ -2719,3 +2719,125 @@ async fn archive_routes_are_admin_only_and_never_leak_files() {
     let (st, _, _) = t.fetch(&admin, "/v1/archive/not-a-uuid/files/x").await;
     assert!(st.is_client_error(), "{st}");
 }
+
+#[tokio::test]
+async fn notification_prefs_quiet_hours_and_push_outbox() {
+    let Some(t) = setup().await else {
+        eprintln!("SKIP: HRMS_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = t.admin().await;
+    let (asha, emp) = t.employee(&admin, "N001").await;
+    // other workers' leftovers never block this test
+    sqlx::query("update hrms.outbox set status = 'skipped' where status in ('pending','sending')")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+
+    // push config is visible to signed-in users only; off in tests
+    let (st, _, body) = t.fetch(&emp, "/v1/push/config").await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["data"]["public_key"], Value::Null);
+
+    // defaults, validation, round trip
+    let r = t.rpc("get_notification_prefs", json!({}), &emp).await;
+    assert_eq!(r.body["data"]["muted"], json!([]), "{}", r.body);
+    for (args, field) in [
+        (json!({ "p_muted": ["salary"], "p_quiet_start": null, "p_quiet_end": null }), "muted"),
+        (json!({ "p_muted": [], "p_quiet_start": "22:00", "p_quiet_end": null }), "quiet_end"),
+        (json!({ "p_muted": [], "p_quiet_start": "22:00", "p_quiet_end": "22:00" }), "quiet_end"),
+    ] {
+        let r = t.rpc("set_notification_prefs", args, &emp).await;
+        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+        assert!(r.body["error"]["field_errors"][field].is_string(), "{}", r.body);
+    }
+    let r = t
+        .rpc("set_notification_prefs", json!({ "p_muted": ["pay", "pay", "announcements"], "p_quiet_start": null, "p_quiet_end": null }), &emp)
+        .await;
+    assert_eq!(r.body["data"]["muted"], json!(["announcements", "pay"]), "{}", r.body);
+
+    let suppressed = |kind: &'static str, at: &'static str| {
+        let t = &t;
+        async move {
+            sqlx::query_scalar::<_, bool>("select hrms.push_suppressed($1, $2, $3::timestamptz)")
+                .bind(asha)
+                .bind(kind)
+                .bind(at)
+                .fetch_one(&t.pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert!(suppressed("payslip.published", "2026-11-14T06:00:00Z").await);
+    assert!(!suppressed("request.submitted", "2026-11-14T06:00:00Z").await);
+    assert!(!suppressed("credentials.reset", "2026-11-14T06:00:00Z").await); // account notices are never muted
+
+    // quiet hours 22:00–07:00 IST wrap midnight
+    t.rpc("set_notification_prefs", json!({ "p_muted": [], "p_quiet_start": "22:00", "p_quiet_end": "07:00" }), &emp)
+        .await;
+    assert!(suppressed("request.submitted", "2026-11-14T17:00:00Z").await); // 22:30 IST
+    assert!(suppressed("request.submitted", "2026-11-14T01:00:00Z").await); // 06:30 IST
+    assert!(!suppressed("request.submitted", "2026-11-14T01:30:00Z").await); // 07:00 IST: over
+    assert!(!suppressed("request.submitted", "2026-11-14T06:00:00Z").await); // 11:30 IST
+    assert!(!suppressed("access.role_changed", "2026-11-14T17:00:00Z").await);
+    t.rpc("set_notification_prefs", json!({ "p_muted": [], "p_quiet_start": null, "p_quiet_end": null }), &emp)
+        .await;
+
+    // test push lands in the inbox; with push off the outbox job is skipped
+    let r = t.rpc("send_test_notification", json!({}), &emp).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let http = hrms_server::push::client();
+    let n = hrms_server::push::run_outbox(&t.pool, None, &http).await.unwrap();
+    assert!(n >= 1);
+    let (status, err): (String, Option<String>) = sqlx::query_as(
+        "select o.status, o.last_error from hrms.outbox o join hrms.notifications n on n.id = o.notification_id
+          where n.recipient_id = $1 and n.kind = 'account.test' order by o.id desc limit 1",
+    )
+    .bind(asha)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!((status.as_str(), err.as_deref()), ("skipped", Some("push not configured")));
+    let r = t.rpc("list_notifications", json!({}), &emp).await;
+    assert_eq!(r.body["data"]["rows"][0]["kind"], "account.test", "{}", r.body);
+    assert_eq!(r.body["data"]["unread"], 1);
+
+    // a subscription on a host that is not a push service is never called and is revoked
+    let sub = json!({ "endpoint": "https://internal.example/hook", "keys": { "p256dh": format!("B{}", "A".repeat(86)), "auth": "A".repeat(22) } });
+    let r = t
+        .rpc("register_push_token", json!({ "p_installation_id": Uuid::new_v4(), "p_token": sub.to_string(), "p_platform": "web" }), &emp)
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    t.rpc("send_test_notification", json!({}), &emp).await;
+    let vapid = hrms_server::push::Vapid::from_secret(
+        p256::SecretKey::from_slice(&[9u8; 32]).unwrap(),
+        "mailto:ops@example.com".into(),
+    );
+    hrms_server::push::run_outbox(&t.pool, Some(&vapid), &http).await.unwrap();
+    let live: i64 = sqlx::query_scalar("select count(*) from hrms.push_tokens where employee_id = $1 and revoked_at is null")
+        .bind(asha)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(live, 0);
+    let status: String = sqlx::query_scalar(
+        "select o.status from hrms.outbox o join hrms.notifications n on n.id = o.notification_id
+          where n.recipient_id = $1 order by o.id desc limit 1",
+    )
+    .bind(asha)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "failed");
+
+    // test pushes are rate limited
+    t.rpc("send_test_notification", json!({}), &emp).await;
+    let r = t.rpc("send_test_notification", json!({}), &emp).await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "{}", r.body);
+
+    // read state
+    let r = t.rpc("mark_notifications_read", json!({ "p_ids": null }), &emp).await;
+    assert!(r.body["data"]["marked"].as_i64().unwrap() >= 3, "{}", r.body);
+    let r = t.rpc("list_notifications", json!({}), &emp).await;
+    assert_eq!(r.body["data"]["unread"], 0);
+}

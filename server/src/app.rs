@@ -56,6 +56,8 @@ pub struct AppState {
     live: Arc<tokio::sync::OnceCell<crate::live::Hub>>,
     /// Private object storage (R2 or a local folder). None = files are off.
     pub store: Option<Arc<crate::storage::Store>>,
+    /// Web Push public key (base64url) when push is configured.
+    pub vapid_public_key: Option<String>,
 }
 
 impl AppState {
@@ -67,11 +69,17 @@ impl AppState {
             db,
             live: Arc::default(),
             store: None,
+            vapid_public_key: None,
         }
     }
 
     pub fn with_store(mut self, store: Option<crate::storage::Store>) -> Self {
         self.store = store.map(Arc::new);
+        self
+    }
+
+    pub fn with_vapid_public_key(mut self, key: Option<String>) -> Self {
+        self.vapid_public_key = key;
         self
     }
 
@@ -123,6 +131,7 @@ pub fn router(state: AppState) -> Router {
     let v1 = Router::new()
         .route("/ping", get(ping))
         .route("/live", get(crate::live::live))
+        .route("/push/config", get(push_config))
         .merge(auth_routes)
         .merge(rpc_routes)
         .merge(file_routes)
@@ -282,6 +291,11 @@ fn json_rejection(e: JsonRejection) -> ApiError {
 }
 
 /// `{"data": .., "version": null, "request_id": ..}` like the HRMS Edge Functions.
+/// Public Web Push key for `PushManager.subscribe`; signed-in users only.
+async fn push_config(State(state): State<AppState>, session: crate::auth::session::Session) -> Json<Value> {
+    ok(json!({ "public_key": state.vapid_public_key }), session.request_id)
+}
+
 pub fn ok(data: Value, request_id: Uuid) -> Json<Value> {
     Json(json!({ "data": data, "version": null, "request_id": request_id }))
 }

@@ -3,6 +3,7 @@
 // home_screen.dart header + quick tiles. The attendance card, approvals and
 // payslip sections are filled in by P4 (attendance), P6 (leave) and P7 (salary).
 
+import { BellBadge, useUnread } from "./notifications";
 import Link from "next/link";
 import { useSession } from "@/lib/session";
 import { roleLabel } from "@/lib/roles";
@@ -28,6 +29,7 @@ const TILES = [
 
 export function Home({ now = new Date() }: { now?: Date }) {
   const { context, caps } = useSession();
+  const unread = useUnread();
   const g = greeting(now.getHours());
   const initials = (context?.employee.name ?? "?")
     .split(/\s+/)
@@ -42,8 +44,9 @@ export function Home({ now = new Date() }: { now?: Date }) {
             <p className="text-body-md text-text-secondary">{g.text},</p>
             <h1 className="truncate text-headline-sm font-medium">{firstName(context?.employee.name)}</h1>
           </div>
-          <Link href="/notifications" aria-label="Notifications" className="grid size-12 place-items-center rounded-full">
+          <Link href="/notifications" aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"} className="relative grid size-12 place-items-center rounded-full">
             <Art name="notifications" size={26} />
+            <BellBadge count={unread} />
           </Link>
           <Link
             href="/profile"

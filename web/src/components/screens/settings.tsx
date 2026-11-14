@@ -57,6 +57,7 @@ export function Settings() {
             {context?.employee.code} · {roleLabel(context?.role ?? "employee")}
           </p>
         </SectionCard>
+        <ActionRow art="notifications" label="Notifications" subtitle="Turn on alerts, choose what to get, quiet hours" tile="bg-leave-card" href="/settings/notifications" />
         <ActionRow art="password" label="Change password" subtitle="Signs out your other devices" tile="bg-attendance-card" href="/settings/password" />
         <SectionCard>
           <h2 className="text-title-md font-semibold">Your devices</h2>

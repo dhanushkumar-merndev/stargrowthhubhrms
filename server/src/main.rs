@@ -66,6 +66,18 @@ async fn main() {
         tracing::info!("attendance machine ingest enabled");
     }
     hrms_server::jobs::spawn(pool.clone());
+    let vapid = match hrms_server::push::Vapid::from_lookup(|k| std::env::var(k).ok()) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("web push misconfigured: {e}");
+            std::process::exit(1);
+        }
+    };
+    if vapid.is_none() {
+        tracing::warn!("web push is off (set VAPID_PRIVATE_KEY and VAPID_SUBJECT); the inbox still works");
+    }
+    let vapid_public_key = vapid.as_ref().map(|v| v.public_key.clone());
+    hrms_server::push::spawn(pool.clone(), vapid);
     let store = match hrms_server::storage::Store::from_lookup(|k| std::env::var(k).ok()) {
         Ok(s) => s,
         Err(e) => {
@@ -76,7 +88,7 @@ async fn main() {
     if store.is_none() {
         tracing::warn!("file storage is off (set R2_* or FILE_STORE_DIR)");
     }
-    let state = AppState::new(config, Some(Db { pool, catalog })).with_store(store);
+    let state = AppState::new(config, Some(Db { pool, catalog })).with_store(store).with_vapid_public_key(vapid_public_key);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

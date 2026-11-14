@@ -1,5 +1,6 @@
 "use client";
 
+import { disablePush } from "./push";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 import { ApiError, authApi, onSessionProblem, rpc } from "./api";
@@ -95,6 +96,8 @@ export function SessionProvider({ children, initialPhase = "loading" }: { childr
     seq.current++;
     hadSession.current = false;
     try {
+      // Stop pushes to this browser before the session ends (best effort, short).
+      await Promise.race([disablePush().catch(() => undefined), new Promise((r) => setTimeout(r, 1500))]);
       await authApi.logout();
     } finally {
       setContext(null);
