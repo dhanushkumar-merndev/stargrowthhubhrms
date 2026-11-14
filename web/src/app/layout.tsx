@@ -1,6 +1,10 @@
 import type { Metadata, Viewport } from "next";
+import { Roboto } from "next/font/google";
+import { Providers } from "@/components/providers";
 import { ServiceWorker } from "@/components/service-worker";
 import "./globals.css";
+
+const roboto = Roboto({ subsets: ["latin"], weight: ["400", "500", "700"], display: "swap", variable: "--font-roboto" });
 
 export const metadata: Metadata = {
   title: "HRMS",
@@ -24,9 +28,9 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className={roboto.variable}>
       <body>
-        {children}
+        <Providers>{children}</Providers>
         <ServiceWorker />
       </body>
     </html>

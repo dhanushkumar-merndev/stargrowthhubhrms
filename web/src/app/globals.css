@@ -3,7 +3,7 @@
 /* Design tokens copied from hrms/lib/app/theme.dart (AppColors / AppSpacing).
    Change them there and here together: the PWA must look like the Android app. */
 @theme {
-  --font-sans: Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-sans: var(--font-roboto), Roboto, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 
   --color-background: #f6f7f9;
   --color-surface: #ffffff;
@@ -83,4 +83,18 @@ body {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* jelly_nav_bar.dart: the pill squishes as it lands on a new tab. */
+@keyframes jelly {
+  0% { transform: scaleX(0.6) scaleY(1.2); }
+  55% { transform: scaleX(1.12) scaleY(0.9); }
+  100% { transform: scaleX(1) scaleY(1); }
+}
+.jelly-pill {
+  animation: jelly 380ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: left 380ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .jelly-pill { animation: none; transition: none; }
 }
