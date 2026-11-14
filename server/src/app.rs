@@ -82,6 +82,8 @@ pub fn router(state: AppState) -> Router {
             "/admin/users/{employee_id}/reset-password",
             post(auth::routes::reset_password),
         )
+        .route("/punch", post(crate::punch::punch))
+        .route("/punch/device", post(crate::punch::register_device))
         .layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT));
 
     let rpc_routes = Router::new()

@@ -48,7 +48,7 @@ async fn service(pool: &PgPool, rid: Uuid) -> ApiResult<Transaction<'static, Pos
     db::begin_as(pool, Caller::Service, rid).await
 }
 
-fn client_ip(headers: &HeaderMap) -> &str {
+pub fn client_ip(headers: &HeaderMap) -> &str {
     headers
         .get(CLIENT_IP_HEADER)
         .and_then(|v| v.to_str().ok())

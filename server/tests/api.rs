@@ -1167,3 +1167,432 @@ async fn background_jobs_run_once_per_interval() {
             .unwrap();
     assert_eq!(ok as usize, first.len());
 }
+
+// ============================================================== web punching
+
+use hrms_server::webauthn::{self, testkit::Authenticator};
+
+struct Puncher {
+    cookie: String,
+    employee_id: Uuid,
+    instance: Uuid,
+    office: Uuid,
+}
+
+impl T {
+    /// A hired employee with a changed password and a shift instance around now.
+    async fn puncher(&self, admin: &str, code: &str) -> Puncher {
+        let (employee_id, temp) = self.hire(admin, code, None).await;
+        let r = self.login(code, &temp).await;
+        let c = r.session_cookie().unwrap();
+        let r = self.change_password(&c, &temp, NEW_PW).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        let cookie = r.session_cookie().unwrap();
+        let (org, _, _, office) = self.org_ids().await;
+        let instance: Uuid = sqlx::query_scalar(
+            "insert into hrms.work_schedule_instances (org_id, employee_id, shift_date, kind, is_required, office_id,
+               shift_version_id, timezone, start_at, end_at, lunch_paid, grace_seconds, early_entry_seconds, early_credit,
+               checkout_extension_seconds, expected_seconds, half_split_at)
+             select $1, $2, date '2031-01-01', 'workday', true, $3, sv.id, 'Asia/Kolkata', now() - interval '1 hour',
+                    now() + interval '8 hours', true, 1800, 1800, false, 7200, 32400, now() + interval '3 hours'
+             from hrms.shift_versions sv where sv.org_id = $1 limit 1 returning id",
+        )
+        .bind(org)
+        .bind(employee_id)
+        .bind(office)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        Puncher {
+            cookie,
+            employee_id,
+            instance,
+            office,
+        }
+    }
+
+    async fn register_passkey(&self, p: &Puncher, a: &Authenticator) -> Resp {
+        let ch = self
+            .rpc("create_device_challenge", json!({}), &p.cookie)
+            .await;
+        assert_eq!(ch.status, StatusCode::OK, "{}", ch.body);
+        let (id, nonce) = (
+            ch.body["data"]["challenge_id"].as_str().unwrap(),
+            ch.body["data"]["nonce"].as_str().unwrap(),
+        );
+        let (cd, ad) = a.register(&webauthn::registration_challenge(id, nonce));
+        self.post(
+            "/v1/punch/device",
+            json!({
+                "challenge_id": id, "nonce": nonce, "credential_id": webauthn::b64url(&a.credential_id),
+                "client_data_json": webauthn::b64url(&cd), "authenticator_data": webauthn::b64url(&ad),
+                "device_label": "Test browser",
+            }),
+            Some(&p.cookie),
+        )
+        .await
+    }
+
+    /// Builds a signed punch body (fresh challenge, location at the HQ point).
+    async fn punch_body(
+        &self,
+        p: &Puncher,
+        a: &mut Authenticator,
+        device: &str,
+        action: &str,
+        target: Uuid,
+    ) -> Value {
+        let ch = self
+            .rpc(
+                "create_punch_challenge",
+                json!({ "p_action": action, "p_target_id": target, "p_device_id": device }),
+                &p.cookie,
+            )
+            .await;
+        assert_eq!(ch.status, StatusCode::OK, "{}", ch.body);
+        let mut body = json!({
+            "operation_key": Uuid::new_v4(),
+            "challenge_id": ch.body["data"]["challenge_id"],
+            "nonce": ch.body["data"]["nonce"],
+            "action": action,
+            "target_id": target,
+            "device_id": device,
+            "office_id": p.office,
+            "employee_id": p.employee_id,
+            "latitude": "12.9000000",
+            "longitude": "77.6000000",
+            "accuracy": "5.00",
+            "sample_at_ms": (chrono::Utc::now().timestamp_millis() - 1000).to_string(),
+            "credential_id": webauthn::b64url(&a.credential_id),
+            "client_data_json": "", "authenticator_data": "", "signature": "",
+        });
+        sign(&mut body, a);
+        body
+    }
+}
+
+fn payload_of(b: &Value) -> String {
+    let s = |k: &str| b[k].as_str().unwrap().to_owned();
+    [
+        "hrms-punch-v1".to_owned(),
+        s("challenge_id").to_lowercase(),
+        s("nonce"),
+        b["operation_key"].as_str().unwrap().to_lowercase(),
+        b["employee_id"].as_str().unwrap().to_lowercase(),
+        s("device_id").to_lowercase(),
+        s("action"),
+        b["target_id"].as_str().unwrap().to_lowercase(),
+        b["office_id"].as_str().unwrap().to_lowercase(),
+        s("latitude"),
+        s("longitude"),
+        s("accuracy"),
+        s("sample_at_ms"),
+    ]
+    .join("\n")
+}
+
+fn sign(body: &mut Value, a: &mut Authenticator) {
+    let (cd, ad, sig) = a.assert(&webauthn::punch_challenge(&payload_of(body)));
+    body["client_data_json"] = json!(webauthn::b64url(&cd));
+    body["authenticator_data"] = json!(webauthn::b64url(&ad));
+    body["signature"] = json!(webauthn::b64url(&sig));
+}
+
+#[tokio::test]
+async fn passkey_registration_edges() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let p = t.puncher(&admin, "WEB001").await;
+
+    // no user verification (no screen lock) is refused with a useful message
+    let mut no_uv = Authenticator::new(ORIGIN);
+    no_uv.flags = webauthn::FLAG_UP;
+    let r = t.register_passkey(&p, &no_uv).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::FORBIDDEN, "VERIFICATION_FAILED")
+    );
+    assert!(
+        r.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("screen lock")
+    );
+
+    // a passkey created on another site (phishing origin / RP id)
+    let evil = Authenticator::new("https://evil.example");
+    assert_eq!(
+        t.register_passkey(&p, &evil).await.status,
+        StatusCode::FORBIDDEN
+    );
+
+    // malformed base64 is a validation error, not a crash
+    let r = t
+        .post(
+            "/v1/punch/device",
+            json!({ "challenge_id": Uuid::new_v4(), "nonce": "x", "credential_id": "x",
+               "client_data_json": "***", "authenticator_data": "" }),
+            Some(&p.cookie),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+
+    // happy path, then the same challenge cannot be used twice
+    let a = Authenticator::new(ORIGIN);
+    let ch = t.rpc("create_device_challenge", json!({}), &p.cookie).await;
+    let (id, nonce) = (
+        ch.body["data"]["challenge_id"].as_str().unwrap(),
+        ch.body["data"]["nonce"].as_str().unwrap(),
+    );
+    let (cd, ad) = a.register(&webauthn::registration_challenge(id, nonce));
+    let body = json!({ "challenge_id": id, "nonce": nonce, "credential_id": webauthn::b64url(&a.credential_id),
+                       "client_data_json": webauthn::b64url(&cd), "authenticator_data": webauthn::b64url(&ad) });
+    let r = t
+        .post("/v1/punch/device", body.clone(), Some(&p.cookie))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(r.body["data"]["device_id"].is_string());
+    let r2 = t.post("/v1/punch/device", body, Some(&p.cookie)).await;
+    assert_eq!(
+        (r2.status, r2.code()),
+        (StatusCode::FORBIDDEN, "VERIFICATION_FAILED"),
+        "{}",
+        r2.body
+    );
+
+    // the label falls back to the user agent; the stored key is a P-256 SPKI
+    let (label, spki): (String, String) = sqlx::query_as(
+        "select device_label, public_key_spki from hrms.devices where id = $1::uuid",
+    )
+    .bind(r.body["data"]["device_id"].as_str().unwrap())
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(label, "api-test");
+    assert_eq!(spki.len(), 124);
+
+    // my device is visible to me for allowCredentials
+    let mine = t.rpc("get_my_web_device", json!({}), &p.cookie).await;
+    assert_eq!(
+        mine.body["data"]["credential_id"],
+        json!(webauthn::b64url(&a.credential_id))
+    );
+
+    // no session, no registration
+    let r = t.post("/v1/punch/device", json!({}), None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn signed_web_punch_flow_and_edges() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let p = t.puncher(&admin, "WEB002").await;
+    let mut a = Authenticator::new(ORIGIN);
+    let reg = t.register_passkey(&p, &a).await;
+    assert_eq!(reg.status, StatusCode::OK, "{}", reg.body);
+    let device = reg.body["data"]["device_id"].as_str().unwrap().to_owned();
+
+    // malformed location: 400 with field errors, logged as a rejection
+    let mut bad = t.punch_body(&p, &mut a, &device, "IN", p.instance).await;
+    bad["latitude"] = json!("12.9");
+    let r = t.post("/v1/punch", bad, Some(&p.cookie)).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::BAD_REQUEST, "LOCATION_REQUIRED")
+    );
+    assert!(r.body["error"]["field_errors"]["latitude"].is_string());
+
+    // the signature must cover exactly what is sent (tampered latitude)
+    let mut tampered = t.punch_body(&p, &mut a, &device, "IN", p.instance).await;
+    tampered["latitude"] = json!("12.9000001");
+    let r = t.post("/v1/punch", tampered, Some(&p.cookie)).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::FORBIDDEN, "VERIFICATION_FAILED"),
+        "{}",
+        r.body
+    );
+
+    // a signature by another passkey is refused
+    let mut other = Authenticator::new(ORIGIN);
+    other.credential_id = a.credential_id.clone();
+    let mut forged = t.punch_body(&p, &mut a, &device, "IN", p.instance).await;
+    sign(&mut forged, &mut other);
+    let r = t.post("/v1/punch", forged, Some(&p.cookie)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    // a different passkey id than the registered one is refused up front
+    let mut wrong_cred = t.punch_body(&p, &mut a, &device, "IN", p.instance).await;
+    wrong_cred["credential_id"] = json!(webauthn::b64url(b"some-other-credential-id"));
+    let r = t.post("/v1/punch", wrong_cred, Some(&p.cookie)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    // happy path
+    let body = t.punch_body(&p, &mut a, &device, "IN", p.instance).await;
+    let r = t.post("/v1/punch", body.clone(), Some(&p.cookie)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["ok"], json!(true));
+    let event = r.body["data"]["event_id"].clone();
+    let session = r.body["data"]["session"]["session_id"]
+        .as_str()
+        .unwrap()
+        .parse::<Uuid>()
+        .unwrap();
+
+    // the event never stores the client IP
+    let integrity: Value =
+        sqlx::query_scalar("select integrity from hrms.attendance_events where id = $1::uuid")
+            .bind(event.as_str().unwrap())
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(integrity["platform"], json!("web"));
+    assert!(integrity.get("client_ip").is_none(), "{integrity}");
+    assert!(!integrity.to_string().contains(&t.ip));
+
+    // exact replay returns the original result, even though challenge and counter are spent
+    let r = t.post("/v1/punch", body.clone(), Some(&p.cookie)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["data"]["event_id"], event);
+
+    // same operation key with different details is a conflict
+    let mut changed = body.clone();
+    changed["accuracy"] = json!("6.00");
+    sign(&mut changed, &mut a);
+    let r = t.post("/v1/punch", changed, Some(&p.cookie)).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::CONFLICT, "IDEMPOTENCY_CONFLICT")
+    );
+
+    // a new operation reusing the spent challenge fails in the commit
+    let mut reuse = body.clone();
+    reuse["operation_key"] = json!(Uuid::new_v4());
+    sign(&mut reuse, &mut a);
+    let r = t.post("/v1/punch", reuse, Some(&p.cookie)).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "VERIFICATION_FAILED"),
+        "{}",
+        r.body
+    );
+
+    // a cloned passkey (counter going backwards) is refused
+    let mut clone_body = t.punch_body(&p, &mut a, &device, "OUT", session).await;
+    a.counter = 1;
+    sign(&mut clone_body, &mut a);
+    let r = t.post("/v1/punch", clone_body, Some(&p.cookie)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    a.counter = 100;
+
+    // office networks: outside the range is refused, inside is accepted
+    let r = t
+        .rpc(
+            "set_office_networks",
+            json!({ "p_office_id": p.office, "p_cidrs": ["198.51.100.0/24"] }),
+            &admin,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let out = t.punch_body(&p, &mut a, &device, "OUT", session).await;
+    let r = t.post("/v1/punch", out, Some(&p.cookie)).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "NETWORK_REQUIRED"),
+        "{}",
+        r.body
+    );
+    let r = t
+        .rpc(
+            "set_office_networks",
+            json!({ "p_office_id": p.office, "p_cidrs": ["10.0.0.0/8"] }),
+            &admin,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let out = t.punch_body(&p, &mut a, &device, "OUT", session).await;
+    let r = t.post("/v1/punch", out, Some(&p.cookie)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["data"]["action"], json!("OUT"));
+    let r = t
+        .rpc(
+            "set_office_networks",
+            json!({ "p_office_id": p.office, "p_cidrs": [] }),
+            &admin,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    // rejections are logged with a keyed IP hash only
+    let (n, leaked): (i64, bool) = sqlx::query_as(
+        "select count(*), coalesce(bool_or(detail::text like '%' || $2 || '%'), false)
+         from hrms.punch_rejections where employee_id = $1",
+    )
+    .bind(p.employee_id)
+    .bind(&t.ip)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert!(n >= 4, "{n}");
+    assert!(!leaked);
+}
+
+#[tokio::test]
+async fn someone_elses_passkey_cannot_punch_for_me() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let owner = t.puncher(&admin, "WEB003").await;
+    let thief = t.puncher(&admin, "WEB004").await;
+    let mut a = Authenticator::new(ORIGIN);
+    let reg = t.register_passkey(&owner, &a).await;
+    let device = reg.body["data"]["device_id"].as_str().unwrap().to_owned();
+
+    // the thief cannot even get a challenge for the owner's device
+    let ch = t
+        .rpc(
+            "create_punch_challenge",
+            json!({ "p_action": "IN", "p_target_id": thief.instance, "p_device_id": device }),
+            &thief.cookie,
+        )
+        .await;
+    assert_eq!(ch.code(), "VERIFICATION_FAILED");
+
+    // nor submit a punch signed by it with the owner's ids
+    let mut body = t
+        .punch_body(&owner, &mut a, &device, "IN", owner.instance)
+        .await;
+    body["employee_id"] = json!(thief.employee_id);
+    sign(&mut body, &mut a);
+    let r = t.post("/v1/punch", body, Some(&thief.cookie)).await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::FORBIDDEN, "VERIFICATION_FAILED")
+    );
+
+    // an Android-style device row is not accepted on the web route
+    let android: Uuid = sqlx::query_scalar(
+        "update hrms.devices set revoked_at = now() where id = $1::uuid returning employee_id",
+    )
+    .bind(&device)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    let android_dev: Uuid = sqlx::query_scalar(
+        "insert into hrms.devices (org_id, employee_id, installation_id, platform, public_key_spki, attestation_level, biometric_bound)
+         select org_id, id, gen_random_uuid(), 'android', repeat('A', 91), 'hardware', true from hrms.employees where id = $1
+         returning id")
+        .bind(android).fetch_one(&t.pool).await.unwrap();
+    let mut body = t
+        .punch_body(
+            &owner,
+            &mut a,
+            &android_dev.to_string(),
+            "IN",
+            owner.instance,
+        )
+        .await;
+    sign(&mut body, &mut a);
+    let r = t.post("/v1/punch", body, Some(&owner.cookie)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+}

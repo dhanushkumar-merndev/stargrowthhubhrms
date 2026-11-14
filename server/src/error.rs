@@ -99,7 +99,8 @@ pub fn status_for_code(code: &str) -> StatusCode {
         | "PASSWORD_CHANGE_REQUIRED"
         | "REAUTH_REQUIRED"
         | "ACCOUNT_INACTIVE"
-        | "SELF_APPROVAL_FORBIDDEN" => StatusCode::FORBIDDEN,
+        | "SELF_APPROVAL_FORBIDDEN"
+        | "VERIFICATION_FAILED" => StatusCode::FORBIDDEN,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "STALE_VERSION"
         | "CONFLICT"
