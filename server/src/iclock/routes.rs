@@ -84,12 +84,47 @@ pub fn ip_hash(ingest_secret: &str, ip: &str) -> String {
     token::ip_hash(ingest_secret, &format!("ip:{ip}"))[..32].to_owned()
 }
 
+const PHOTO_BUCKET: &str = "device-photos";
+/// Same cap as `device_punch_photos.size_bytes`.
+const MAX_PHOTO_BYTES: usize = 2_097_152;
+
+/// `<org>/<serial>/<YYYY-MM-DD>/<pin>-<HHMMSS>-<sha8>.jpg`, exactly what
+/// internal_attach_device_photo expects. None for anything unsafe.
+pub fn photo_path(
+    org: &str,
+    serial: &str,
+    pin: &str,
+    device_time: &str,
+    sha: &str,
+) -> Option<String> {
+    let t = chrono::NaiveDateTime::parse_from_str(device_time.trim(), "%Y-%m-%d %H:%M:%S").ok()?;
+    let safe = |s: &str, max: usize| {
+        !s.is_empty() && s.len() <= max && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    if !safe(org, 36)
+        || !safe(serial, 64)
+        || !pin.bytes().all(|b| b.is_ascii_alphanumeric())
+        || pin.is_empty()
+        || pin.len() > 24
+        || sha.len() < 8
+    {
+        return None;
+    }
+    Some(format!(
+        "{org}/{serial}/{}/{pin}-{}-{}.jpg",
+        t.format("%Y-%m-%d"),
+        t.format("%H%M%S"),
+        &sha[..8]
+    ))
+}
+
 struct Ctx<'a> {
     pool: &'a sqlx::PgPool,
     secret: &'a str,
     serial: String,
     token: Option<String>,
     ip_hash: String,
+    store: Option<&'a crate::storage::Store>,
 }
 
 struct Transient;
@@ -183,6 +218,7 @@ pub async fn handle(
                 .map(str::to_owned)
         }),
         ip_hash: ip_hash(secret, &ip),
+        store: state.store.as_deref(),
     };
     let method = req.method().clone();
     let result = if method == Method::GET {
@@ -327,6 +363,7 @@ async fn handle_post(
         if !is_ok(&g) {
             return Ok(not_found());
         }
+        let org_id = g["org_id"].as_str().unwrap_or_default().to_owned();
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -348,15 +385,63 @@ async fn handle_post(
                 ctx.reject("bad_photo", json!({ "error": error })).await;
             }
             Ok(photo) => {
-                // Private object storage arrives with documents (R2). Until then
-                // the photo is acknowledged and only its fingerprint is logged.
                 let sha = hex(&Sha256::digest(&photo.jpeg));
-                tracing::info!(serial = %ctx.serial, pin = %photo.pin, sha = &sha[..8], bytes = photo.jpeg.len(), "punch photo received (storage off)");
-                ctx.reject(
-                    "photo_storage_off",
-                    json!({ "pin": photo.pin, "device_time": photo.device_time, "sha8": &sha[..8] }),
-                )
-                .await;
+                match (
+                    ctx.store,
+                    photo_path(&org_id, &ctx.serial, &photo.pin, &photo.device_time, &sha),
+                ) {
+                    (None, _) => {
+                        // No object storage configured: acknowledge, log the fingerprint only.
+                        tracing::info!(serial = %ctx.serial, pin = %photo.pin, sha = &sha[..8], bytes = photo.jpeg.len(), "punch photo received (storage off)");
+                        ctx.reject(
+                            "photo_storage_off",
+                            json!({ "pin": photo.pin, "device_time": photo.device_time, "sha8": &sha[..8] }),
+                        )
+                        .await;
+                    }
+                    (Some(_), None) => {
+                        ctx.reject(
+                            "bad_photo",
+                            json!({ "error": "bad_path", "pin": photo.pin }),
+                        )
+                        .await;
+                    }
+                    (Some(store), Some(path)) if photo.jpeg.len() <= MAX_PHOTO_BYTES => {
+                        let fresh = match store
+                            .put(PHOTO_BUCKET, &path, &photo.jpeg, "image/jpeg")
+                            .await
+                        {
+                            Ok(fresh) => fresh,
+                            Err(e) => {
+                                // The machine resends on a non-OK reply.
+                                tracing::error!(error = %e, "punch photo storage failed");
+                                return Ok(unavailable());
+                            }
+                        };
+                        let r = ctx
+                            .call(
+                                "internal_attach_device_photo",
+                                json!({
+                                    "p_pin": photo.pin, "p_device_time": photo.device_time,
+                                    "p_storage_path": path, "p_sha256": sha,
+                                    "p_size_bytes": photo.jpeg.len(), "p_stamp": stamp,
+                                }),
+                            )
+                            .await;
+                        let keep = matches!(&r, Ok(v) if is_ok(v));
+                        if !keep && fresh {
+                            let _ = store.delete(PHOTO_BUCKET, &path).await;
+                        }
+                        r?;
+                    }
+                    (Some(_), Some(_)) => {
+                        ctx.reject(
+                            "bad_photo",
+                            json!({ "error": "too_large", "bytes": photo.jpeg.len() }),
+                        )
+                        .await;
+                    }
+                }
             }
         }
         return Ok(ok("OK"));
@@ -417,6 +502,25 @@ pub async fn configure(pool: &sqlx::PgPool, secret: &str) -> Result<(), crate::e
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn photo_paths_match_the_database_rule() {
+        let org = "6f1c2c56-0d7a-4c55-9c0e-5f3a1b2c3d4e";
+        let sha = "abcdef0123456789";
+        assert_eq!(
+            photo_path(org, "CKJB12", "7", "2026-11-14 09:05:03", sha).unwrap(),
+            format!("{org}/CKJB12/2026-11-14/7-090503-abcdef01.jpg")
+        );
+        assert!(photo_path(org, "CKJB12", "7", "2026-11-14T09:05:03", sha).is_none());
+        assert!(photo_path(org, "CKJB12", "7", "2026-02-30 09:05:03", sha).is_none());
+        assert!(photo_path(org, "../x", "7", "2026-11-14 09:05:03", sha).is_none());
+        assert!(photo_path(org, "CKJB12", "7/..", "2026-11-14 09:05:03", sha).is_none());
+        assert!(photo_path(org, "CKJB12", "", "2026-11-14 09:05:03", sha).is_none());
+        assert!(photo_path(org, "CKJB12", &"9".repeat(25), "2026-11-14 09:05:03", sha).is_none());
+        assert!(photo_path("", "CKJB12", "7", "2026-11-14 09:05:03", sha).is_none());
+        assert!(photo_path(org, "CKJB12", "7", "2026-11-14 09:05:03", "abc").is_none());
+    }
+
     use super::*;
 
     fn h(pairs: &[(&str, &str)]) -> HeaderMap {

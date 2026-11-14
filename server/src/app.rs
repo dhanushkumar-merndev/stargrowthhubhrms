@@ -54,6 +54,8 @@ pub struct AppState {
     pub db: Option<Db>,
     /// Started on first use, on the serving runtime.
     live: Arc<tokio::sync::OnceCell<crate::live::Hub>>,
+    /// Private object storage (R2 or a local folder). None = files are off.
+    pub store: Option<Arc<crate::storage::Store>>,
 }
 
 impl AppState {
@@ -64,7 +66,13 @@ impl AppState {
             cookie,
             db,
             live: Arc::default(),
+            store: None,
         }
+    }
+
+    pub fn with_store(mut self, store: Option<crate::storage::Store>) -> Self {
+        self.store = store.map(Arc::new);
+        self
     }
 
     pub async fn live_hub(&self) -> ApiResult<&crate::live::Hub> {
@@ -97,6 +105,13 @@ pub fn router(state: AppState) -> Router {
         .route("/punch/device", post(crate::punch::register_device))
         .layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT));
 
+    // Files carry their own 5 MB limit (checked while reading the body).
+    let file_routes = Router::new()
+        .route("/files", post(crate::files::upload))
+        .route("/files/{version}", get(crate::files::download))
+        .route("/device-photos/{punch}", get(crate::files::device_photo))
+        .layer(DefaultBodyLimit::disable());
+
     let rpc_routes = Router::new()
         .route("/rpc/{name}", post(auth::routes::rpc))
         .layer(DefaultBodyLimit::max(RPC_BODY_LIMIT));
@@ -108,6 +123,7 @@ pub fn router(state: AppState) -> Router {
         .route("/live", get(crate::live::live))
         .merge(auth_routes)
         .merge(rpc_routes)
+        .merge(file_routes)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_same_origin,

@@ -66,7 +66,17 @@ async fn main() {
         tracing::info!("attendance machine ingest enabled");
     }
     hrms_server::jobs::spawn(pool.clone());
-    let state = AppState::new(config, Some(Db { pool, catalog }));
+    let store = match hrms_server::storage::Store::from_lookup(|k| std::env::var(k).ok()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("file storage misconfigured: {e}");
+            std::process::exit(1);
+        }
+    };
+    if store.is_none() {
+        tracing::warn!("file storage is off (set R2_* or FILE_STORE_DIR)");
+    }
+    let state = AppState::new(config, Some(Db { pool, catalog })).with_store(store);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -85,6 +85,10 @@ macro_rules! setup {
 }
 
 async fn setup() -> Option<T> {
+    setup_with(None).await
+}
+
+async fn setup_with(store: Option<hrms_server::storage::Store>) -> Option<T> {
     let url = std::env::var("HRMS_TEST_DATABASE_URL").ok()?;
     let pool = db::connect(&url, 4).await.expect("connect");
     MIGRATED
@@ -107,13 +111,16 @@ async fn setup() -> Option<T> {
     hrms_server::iclock::routes::configure(&pool, INGEST)
         .await
         .expect("device ingest configured");
-    let app = router(AppState::new(
-        config,
-        Some(Db {
-            pool: pool.clone(),
-            catalog,
-        }),
-    ));
+    let app = router(
+        AppState::new(
+            config,
+            Some(Db {
+                pool: pool.clone(),
+                catalog,
+            }),
+        )
+        .with_store(store),
+    );
     let tag = Uuid::new_v4().simple().to_string()[..8].to_uppercase();
     let t = T {
         app,
@@ -2270,4 +2277,346 @@ async fn live_stream_is_private_per_audience_and_replays() {
         first_frames(&t.app, req, 100).await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+// ------------------------------------------------------------------ files
+
+fn temp_store() -> (hrms_server::storage::Store, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("hrms-api-files-{}", Uuid::new_v4()));
+    (hrms_server::storage::Store::Dir(dir.clone()), dir)
+}
+
+fn count_files(dir: &std::path::Path) -> usize {
+    fn walk(d: &std::path::Path) -> usize {
+        std::fs::read_dir(d)
+            .map(|it| {
+                it.flatten()
+                    .map(|e| {
+                        if e.path().is_dir() {
+                            walk(&e.path())
+                        } else {
+                            1
+                        }
+                    })
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+    walk(dir)
+}
+
+fn test_pdf(body: &str) -> Vec<u8> {
+    format!("%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n2 0 obj << /Type /Page >> endobj\n{body}\n%%EOF\n").into_bytes()
+}
+
+impl T {
+    async fn employee(&self, admin: &str, code: &str) -> (Uuid, String) {
+        let (id, temp) = self.hire(admin, code, None).await;
+        let r = self.login(code, &temp).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        let c = r.session_cookie().unwrap();
+        let r = self.change_password(&c, &temp, NEW_PW).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        (id, r.session_cookie().unwrap())
+    }
+
+    async fn upload(&self, cookie: Option<&str>, query: &str, mime: &str, bytes: Vec<u8>) -> Resp {
+        let mut b = self
+            .base(Method::POST, &format!("/v1/files?{query}"))
+            .header(header::CONTENT_TYPE, mime);
+        if let Some(c) = cookie {
+            b = b.header(header::COOKIE, c);
+        }
+        self.send(b.body(Body::from(bytes)).unwrap()).await
+    }
+
+    async fn fetch(&self, cookie: &str, path: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let req = self
+            .base(Method::GET, path)
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let (status, headers) = (res.status(), res.headers().clone());
+        let bytes = res.into_body().collect().await.unwrap().to_bytes().to_vec();
+        (status, headers, bytes)
+    }
+}
+
+#[tokio::test]
+async fn files_upload_validate_store_and_download() {
+    let (store, dir) = temp_store();
+    let Some(t) = setup_with(Some(store)).await else {
+        eprintln!("SKIP: HRMS_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = t.admin().await;
+    let (asha, emp) = t.employee(&admin, "F001").await;
+    let (ravi, other) = t.employee(&admin, "F002").await;
+    let own = format!(
+        "class=employee_document&filename=..%2F..%2FOffer%20letter.pdf&owner_employee_id={asha}&title=Offer"
+    );
+    let pdf = test_pdf("");
+
+    // happy path: stored once, hashed, downloadable by the owner
+    let r = t
+        .upload(Some(&emp), &own, "application/pdf", pdf.clone())
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let version = r.body["data"]["file_version_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(count_files(&dir), 1);
+    let (sha, size, state, name): (String, i64, String, String) = sqlx::query_as(
+        "select fv.sha256, fv.size_bytes, fv.state, fv.original_filename from hrms.file_versions fv where fv.id = $1::uuid",
+    )
+    .bind(&version)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(sha, hrms_server::storage::sigv4::sha256_hex(&pdf));
+    assert_eq!(size as usize, pdf.len());
+    assert!(state == "validated" || state == "published", "{state}");
+    assert_eq!(
+        name, "Offer letter.pdf",
+        "path parts stripped from the name"
+    );
+
+    let (st, h, body) = t.fetch(&emp, &format!("/v1/files/{version}")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, pdf);
+    assert_eq!(h[header::CONTENT_TYPE], "application/pdf");
+    assert_eq!(h[header::CACHE_CONTROL], "private, no-store, max-age=0");
+    assert!(
+        h[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("inline;")
+    );
+    assert!(
+        h.get("x-file-grant").is_some(),
+        "grant id for report_file_opened"
+    );
+    let (_, h, _) = t
+        .fetch(&emp, &format!("/v1/files/{version}?purpose=download"))
+        .await;
+    assert!(
+        h[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment;")
+    );
+    let audits: i64 = sqlx::query_scalar(
+        "select count(*) from hrms.file_access_grants where file_version_id = $1::uuid",
+    )
+    .bind(&version)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert!(audits >= 2, "every read is authorised and recorded");
+
+    // another employee cannot read it; an unknown id is not leaked
+    let (st, _, _) = t.fetch(&other, &format!("/v1/files/{version}")).await;
+    assert!(
+        matches!(st, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND),
+        "{st}"
+    );
+    let (st, _, _) = t
+        .fetch(&other, &format!("/v1/files/{}", Uuid::new_v4()))
+        .await;
+    assert!(
+        matches!(st, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND),
+        "{st}"
+    );
+    let (st, _, _) = t.fetch(&emp, "/v1/files/not-a-uuid").await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    // rights: payslips are payroll-only; documents only for yourself
+    let r = t
+        .upload(
+            Some(&emp),
+            &format!(
+                "class=payslip&filename=p.pdf&owner_employee_id={asha}&salary_month=2026-10-01"
+            ),
+            "application/pdf",
+            pdf.clone(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    let r = t
+        .upload(
+            Some(&emp),
+            &format!("class=employee_document&filename=x.pdf&owner_employee_id={ravi}"),
+            "application/pdf",
+            pdf.clone(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    assert_eq!(count_files(&dir), 1, "nothing stored for refused uploads");
+
+    // bad bytes are recorded as rejected and never stored
+    let png = [
+        0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R', 0,
+        0, 0, 9, 0, 0, 0, 9,
+    ];
+    let r = t
+        .upload(Some(&emp), &own, "application/pdf", png.to_vec())
+        .await;
+    assert_eq!(
+        (r.status, r.body["error"]["code"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("INVALID_FILE_TYPE")),
+        "{}",
+        r.body
+    );
+    let r = t
+        .upload(
+            Some(&emp),
+            &own,
+            "application/pdf",
+            test_pdf("/OpenAction << /S /JavaScript /JS (app.alert(1)) >>"),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        r.body["error"]["field_errors"]["file"]
+            .as_str()
+            .unwrap()
+            .contains("scripts")
+    );
+    assert_eq!(count_files(&dir), 1);
+
+    // request-level edges
+    let r = t
+        .upload(Some(&emp), &own, "text/plain", b"hello".to_vec())
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let r = t.upload(Some(&emp), &own, "application/pdf", vec![]).await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let r = t
+        .upload(Some(&emp), &own, "application/pdf", vec![b'%'; 5_000_001])
+        .await;
+    assert_eq!(
+        (r.status, r.body["error"]["code"].as_str()),
+        (StatusCode::PAYLOAD_TOO_LARGE, Some("FILE_TOO_LARGE"))
+    );
+    let r = t.upload(None, &own, "application/pdf", pdf.clone()).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let r = t
+        .upload(Some(&emp), "filename=a.pdf", "application/pdf", pdf.clone())
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "class is required");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn files_are_off_without_storage() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let r = t
+        .upload(
+            Some(&admin),
+            "class=company_policy&filename=p.pdf",
+            "application/pdf",
+            test_pdf(""),
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.body["error"]["code"].as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("UPLOAD_UNAVAILABLE"))
+    );
+    assert_eq!(r.body["error"]["retryable"], true);
+    let (st, _, _) = t
+        .fetch(&admin, &format!("/v1/files/{}", Uuid::new_v4()))
+        .await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn machine_photos_are_stored_and_only_hr_can_view_them() {
+    let (store, dir) = temp_store();
+    let Some(t) = setup_with(Some(store)).await else {
+        eprintln!("SKIP: HRMS_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = t.admin().await;
+    let (_, emp) = t.employee(&admin, "P001").await;
+    let sn = t.machine(&admin, json!({})).await;
+    let when = local_now(3);
+    let compact: String = when.chars().filter(char::is_ascii_digit).collect();
+    let r = t
+        .dpost(
+            &format!("/iclock/cdata?SN={sn}&table=ATTLOG&Stamp=1"),
+            &format!("7\t{when}\t0\t1\t0\n"),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+
+    let jpeg: [u8; 12] = [
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9,
+    ];
+    let mut body = format!("PIN={compact}-7.jpg\nSN={sn}\nsize=12\nCMD=uploadphoto\0").into_bytes();
+    body.extend_from_slice(&jpeg);
+    let r = t
+        .device(
+            Method::POST,
+            &format!("/iclock/cdata?SN={sn}&table=ATTPHOTO&Stamp=2"),
+            body.clone(),
+            &[],
+        )
+        .await;
+    assert_eq!((r.status, r.text.as_str()), (StatusCode::OK, "OK"));
+    assert_eq!(count_files(&dir), 1);
+    assert_eq!(t.rejections(&sn, "photo_storage_off").await, 0);
+    // a resend is a duplicate: still one object, still OK
+    let r = t
+        .device(
+            Method::POST,
+            &format!("/iclock/cdata?SN={sn}&table=ATTPHOTO&Stamp=2"),
+            body,
+            &[],
+        )
+        .await;
+    assert_eq!(r.text, "OK");
+    assert_eq!(count_files(&dir), 1);
+
+    let punch: Uuid = sqlx::query_scalar(
+        "select id from hrms.device_punch_events where serial = $1 and photo_path is not null",
+    )
+    .bind(&sn)
+    .fetch_one(&t.pool)
+    .await
+    .expect("photo joined to its punch");
+    let (st, h, bytes) = t.fetch(&admin, &format!("/v1/device-photos/{punch}")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(bytes, jpeg);
+    assert_eq!(h[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(h[header::CACHE_CONTROL], "private, no-store, max-age=0");
+    let (st, _, _) = t.fetch(&emp, &format!("/v1/device-photos/{punch}")).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let (st, _, _) = t
+        .fetch(&admin, &format!("/v1/device-photos/{}", Uuid::new_v4()))
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // a photo far outside the window is refused and its object removed again
+    let old = "20200101090000";
+    let mut body = format!("PIN={old}-7.jpg\nSN={sn}\nsize=12\nCMD=uploadphoto\0").into_bytes();
+    body.extend_from_slice(&jpeg);
+    let r = t
+        .device(
+            Method::POST,
+            &format!("/iclock/cdata?SN={sn}&table=ATTPHOTO&Stamp=3"),
+            body,
+            &[],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        count_files(&dir),
+        1,
+        "refused photos do not stay in storage"
+    );
+    assert_eq!(t.rejections(&sn, "photo_out_of_window").await, 1);
+    let _ = std::fs::remove_dir_all(dir);
 }
