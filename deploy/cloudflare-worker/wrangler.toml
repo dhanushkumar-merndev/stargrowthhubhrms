@@ -1,0 +1,16 @@
+# Cloudflare Worker that forwards an HTTP-only machine's traffic to the API on
+# Render. Deploy with:  npx wrangler deploy   (see docs/DEPLOY.md, "Attendance machines")
+name = "hrms-device-relay"
+main = "src/index.js"
+compatibility_date = "2025-10-01"
+
+# No custom domain yet: the machine points at the workers.dev host name
+# (hrms-device-relay.<account>.workers.dev, port 80). With a domain later, add:
+# routes = [{ pattern = "device.example.com", custom_domain = true }]
+workers_dev = true
+
+[vars]
+# The Render service URL (iclock routes are served outside /v1 and need no proxy secret).
+APP_ORIGIN = "https://hrms-server.onrender.com"
+
+# Secret (not here): npx wrangler secret put DEVICE_RELAY_SECRET

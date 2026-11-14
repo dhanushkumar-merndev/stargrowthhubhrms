@@ -27,6 +27,10 @@ pub struct Config {
     pub database_max_connections: u32,
     /// Domain of the internal login aliases (never a real mailbox).
     pub alias_domain: String,
+    /// eSSL/ZKTeco push: shared ingest secret (>= 32 chars). None = /iclock is off.
+    pub device_ingest_secret: Option<String>,
+    /// Shared with the Cloudflare relay; only then is `x-device-ip` believed.
+    pub device_relay_secret: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -43,6 +47,14 @@ impl std::fmt::Debug for Config {
             )
             .field("database_max_connections", &self.database_max_connections)
             .field("alias_domain", &self.alias_domain)
+            .field(
+                "device_ingest_secret",
+                &self.device_ingest_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "device_relay_secret",
+                &self.device_relay_secret.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -117,6 +129,25 @@ impl Config {
             return Err(ConfigError::Invalid("ALIAS_DOMAIN", "not a domain".into()));
         }
 
+        let optional_secret = |key: &'static str| -> Result<Option<String>, ConfigError> {
+            match get(key).filter(|v| !v.trim().is_empty()) {
+                Some(v) if v.len() < 32 => Err(ConfigError::TooShort(key, 32)),
+                Some(v) if v == proxy_secret || v == app_secret => Err(ConfigError::Invalid(
+                    key,
+                    "must differ from the other secrets".into(),
+                )),
+                other => Ok(other),
+            }
+        };
+        let device_ingest_secret = optional_secret("DEVICE_INGEST_SECRET")?;
+        let device_relay_secret = optional_secret("DEVICE_RELAY_SECRET")?;
+        if device_relay_secret.is_some() && device_relay_secret == device_ingest_secret {
+            return Err(ConfigError::Invalid(
+                "DEVICE_RELAY_SECRET",
+                "must differ from DEVICE_INGEST_SECRET".into(),
+            ));
+        }
+
         Ok(Self {
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
             app_origin,
@@ -125,6 +156,8 @@ impl Config {
             database_url,
             database_max_connections,
             alias_domain,
+            device_ingest_secret,
+            device_relay_secret,
         })
     }
 }
@@ -160,6 +193,46 @@ mod tests {
             v.push((k, val));
         }
         Config::from_lookup(lookup(&v))
+    }
+
+    #[test]
+    fn device_secrets_are_optional_but_strong_and_distinct() {
+        let c = with(&[]).unwrap();
+        assert!(c.device_ingest_secret.is_none() && c.device_relay_secret.is_none());
+        let ingest = "ingest-secret-0123456789abcdef01234";
+        let relay = "relay-secret-0123456789abcdef012345";
+        let c = with(&[
+            ("DEVICE_INGEST_SECRET", ingest),
+            ("DEVICE_RELAY_SECRET", relay),
+        ])
+        .unwrap();
+        assert_eq!(c.device_ingest_secret.as_deref(), Some(ingest));
+        assert!(!format!("{c:?}").contains(ingest) && !format!("{c:?}").contains(relay));
+        assert!(matches!(
+            with(&[("DEVICE_INGEST_SECRET", "short")]),
+            Err(ConfigError::TooShort(..))
+        ));
+        assert!(
+            with(&[("DEVICE_INGEST_SECRET", "   ")])
+                .unwrap()
+                .device_ingest_secret
+                .is_none()
+        );
+        assert!(matches!(
+            with(&[("DEVICE_INGEST_SECRET", SECRET)]),
+            Err(ConfigError::Invalid(..))
+        ));
+        assert!(matches!(
+            with(&[("DEVICE_RELAY_SECRET", APP)]),
+            Err(ConfigError::Invalid(..))
+        ));
+        assert!(matches!(
+            with(&[
+                ("DEVICE_INGEST_SECRET", ingest),
+                ("DEVICE_RELAY_SECRET", ingest)
+            ]),
+            Err(ConfigError::Invalid(..))
+        ));
     }
 
     #[test]

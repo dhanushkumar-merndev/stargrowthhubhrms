@@ -58,6 +58,13 @@ async fn main() {
         }
     };
     tracing::info!(functions = catalog.public_len(), "rpc catalog loaded");
+    if let Some(secret) = config.device_ingest_secret.as_deref() {
+        if let Err(e) = hrms_server::iclock::routes::configure(&pool, secret).await {
+            tracing::error!("cannot configure device ingest: {e:?}");
+            std::process::exit(1);
+        }
+        tracing::info!("attendance machine ingest enabled");
+    }
     hrms_server::jobs::spawn(pool.clone());
     let state = AppState::new(config, Some(Db { pool, catalog }));
 

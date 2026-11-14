@@ -8,7 +8,7 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -106,6 +106,9 @@ pub fn router(state: AppState) -> Router {
         // Liveness for UptimeRobot / Render. No database, no secrets, cheap.
         .route("/healthz", get(healthz))
         .nest("/v1", v1)
+        // Attendance machines call these directly (no proxy, no cookies).
+        .route("/iclock/{endpoint}", any(crate::iclock::routes::handle))
+        .route("/api/iclock/{endpoint}", any(crate::iclock::routes::handle))
         .fallback(not_found)
         .with_state(state)
         .layer(CompressionLayer::new())

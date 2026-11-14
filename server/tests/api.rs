@@ -29,6 +29,8 @@ const PROXY: &str = "test-proxy-secret-0123456789abcdef";
 const ORIGIN: &str = "https://web-hrms.vercel.app";
 const ADMIN_PW: &str = "Initial-Admin-Pass-42";
 const NEW_PW: &str = "Brand-New-Secret-2026";
+const INGEST: &str = "test-device-ingest-secret-0123456789abcdef";
+const RELAY: &str = "test-device-relay-secret-fedcba9876543210";
 
 static MIGRATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
@@ -97,9 +99,14 @@ async fn setup() -> Option<T> {
         "APP_ORIGIN" => Some(ORIGIN.into()),
         "PROXY_SECRET" => Some(PROXY.into()),
         "APP_SECRET" => Some("test-app-secret-fedcba9876543210fedcba".into()),
+        "DEVICE_INGEST_SECRET" => Some(INGEST.into()),
+        "DEVICE_RELAY_SECRET" => Some(RELAY.into()),
         _ => None,
     })
     .unwrap();
+    hrms_server::iclock::routes::configure(&pool, INGEST)
+        .await
+        .expect("device ingest configured");
     let app = router(AppState::new(
         config,
         Some(Db {
@@ -1595,4 +1602,549 @@ async fn someone_elses_passkey_cannot_punch_for_me() {
     sign(&mut body, &mut a);
     let r = t.post("/v1/punch", body, Some(&owner.cookie)).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+}
+
+// ============================================================== iclock (eSSL)
+
+struct Dev {
+    status: StatusCode,
+    text: String,
+}
+
+impl T {
+    async fn device(
+        &self,
+        method: Method,
+        path: &str,
+        body: Vec<u8>,
+        extra: &[(&str, &str)],
+    ) -> Dev {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("x-forwarded-for", &self.ip)
+            .header(header::USER_AGENT, "iClock Proxy/1.09");
+        for (k, v) in extra {
+            b = b.header(*k, *v);
+        }
+        let res = self
+            .app
+            .clone()
+            .oneshot(b.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        Dev {
+            status,
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+        }
+    }
+
+    async fn dget(&self, path: &str) -> Dev {
+        self.device(Method::GET, path, vec![], &[]).await
+    }
+
+    async fn dpost(&self, path: &str, body: &str) -> Dev {
+        self.device(Method::POST, path, body.as_bytes().to_vec(), &[])
+            .await
+    }
+
+    /// Admin registers a machine; returns its serial.
+    async fn machine(&self, admin: &str, extra: Value) -> String {
+        let serial = format!(
+            "SN{}",
+            Uuid::new_v4().simple().to_string()[..10].to_uppercase()
+        );
+        let mut d = json!({ "serial": serial, "label": "Front door" });
+        if let (Value::Object(m), Value::Object(e)) = (&mut d, extra) {
+            m.extend(e);
+        }
+        let r = self
+            .rpc("save_attendance_device", json!({ "p_device": d }), admin)
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        serial
+    }
+
+    async fn rejections(&self, serial: &str, code: &str) -> i64 {
+        sqlx::query_scalar(
+            "select count(*) from hrms.device_ingest_rejections where serial = $1 and code = $2",
+        )
+        .bind(serial)
+        .bind(code)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+}
+
+fn local_now(minus_minutes: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::minutes(330 - minus_minutes))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
+#[tokio::test]
+async fn iclock_handshake_and_gate_edges() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let sn = t.machine(&admin, json!({})).await;
+
+    let r = t.dget(&format!("/iclock/cdata?SN={sn}&options=all")).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert!(r.text.starts_with(&format!("GET OPTION FROM: {sn}\n")));
+    assert!(r.text.contains("TransFlag=1110101000\n") && r.text.contains("ATTLOGStamp=0\n"));
+    let r = t
+        .dget(&format!("/iclock/cdata.aspx?SN={sn}&pushver=2.4.1"))
+        .await;
+    assert!(
+        r.text
+            .contains("TransFlag=TransData AttLog\tOpLog\tAttPhoto\tEnrollUser\tChgUser"),
+        "{}",
+        r.text
+    );
+    let r = t.dget(&format!("/api/iclock/CDATA.aspx?sn={sn}")).await;
+    assert_eq!(r.status, StatusCode::OK, "rewrite path + lowercase sn");
+
+    // the machine's firmware is learned from getrequest INFO
+    let r = t
+        .dget(&format!(
+            "/iclock/getrequest?SN={sn}&INFO=Ver%208.0.4.2-SIM,5,0,42"
+        ))
+        .await;
+    assert_eq!(
+        (r.status, r.text.as_str()),
+        (StatusCode::OK, "OK"),
+        "idle: commands off"
+    );
+    let fw: Option<String> =
+        sqlx::query_scalar("select firmware from hrms.attendance_devices where serial = $1")
+            .bind(&sn)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(fw.as_deref(), Some("Ver 8.0.4.2-SIM"));
+    assert_eq!(t.dget(&format!("/iclock/ping?SN={sn}")).await.text, "OK");
+
+    // bland 404s for everything unauthorised or unknown
+    for path in [
+        "/iclock/cdata".to_owned(),
+        "/iclock/cdata?SN=".to_owned(),
+        "/iclock/cdata?SN=NOPE12345".to_owned(),
+        "/iclock/cdata?SN=bad%20serial%3B".to_owned(),
+        format!("/iclock/admin?SN={sn}"),
+        format!("/iclock/cdata.php?SN={sn}"),
+    ] {
+        let r = t.dget(&path).await;
+        assert_eq!(
+            (r.status, r.text.as_str()),
+            (StatusCode::NOT_FOUND, "Not Found"),
+            "{path}"
+        );
+    }
+    assert!(t.rejections("NOPE12345", "unknown_serial").await >= 1);
+    let r = t
+        .device(Method::PUT, &format!("/iclock/cdata?SN={sn}"), vec![], &[])
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = t
+        .device(
+            Method::DELETE,
+            &format!("/iclock/cdata?SN={sn}"),
+            vec![],
+            &[],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    // device tokens: query or header, never missing or wrong
+    let tok = "device-token-0123456789";
+    let sn2 = t.machine(&admin, json!({ "token": tok })).await;
+    assert_eq!(
+        t.dget(&format!("/iclock/cdata?SN={sn2}")).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        t.dget(&format!("/iclock/cdata?SN={sn2}&token=wrong-token-0000000"))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        t.dget(&format!("/iclock/cdata?SN={sn2}&token={tok}"))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let r = t
+        .device(
+            Method::GET,
+            &format!("/iclock/cdata?SN={sn2}"),
+            vec![],
+            &[("x-device-token", tok)],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(t.rejections(&sn2, "bad_token").await >= 2);
+
+    // an inactive machine is refused
+    let sn3 = t.machine(&admin, json!({ "active": false })).await;
+    assert_eq!(
+        t.dget(&format!("/iclock/cdata?SN={sn3}")).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(t.rejections(&sn3, "inactive_device").await, 1);
+
+    // the relay's device IP is believed only with the relay secret
+    let ip = "198.51.100.77";
+    t.device(
+        Method::GET,
+        &format!("/iclock/ping?SN={sn}"),
+        vec![],
+        &[("x-relay-secret", RELAY), ("x-device-ip", ip)],
+    )
+    .await;
+    let seen: Option<String> =
+        sqlx::query_scalar("select last_ip_hash from hrms.attendance_devices where serial = $1")
+            .bind(&sn)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(seen, Some(hrms_server::iclock::routes::ip_hash(INGEST, ip)));
+    t.device(
+        Method::GET,
+        &format!("/iclock/ping?SN={sn}"),
+        vec![],
+        &[("x-relay-secret", "forged"), ("x-device-ip", "9.9.9.9")],
+    )
+    .await;
+    let seen: Option<String> =
+        sqlx::query_scalar("select last_ip_hash from hrms.attendance_devices where serial = $1")
+            .bind(&sn)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        seen,
+        Some(hrms_server::iclock::routes::ip_hash(INGEST, &t.ip)),
+        "forged relay ignored"
+    );
+}
+
+#[tokio::test]
+async fn iclock_attlog_ingest_dedupes_and_acks_everything() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let sn = t.machine(&admin, json!({})).await;
+    let body = format!(
+        "7\t{}\t0\t1\t0\t0\t0\n8\t{}\t1\t15\t0\ngarbage line\n';x\t{}\t0\t1\n\n",
+        local_now(30),
+        local_now(20),
+        local_now(10)
+    );
+    let path = format!("/iclock/cdata?SN={sn}&table=ATTLOG&Stamp=9001");
+    let r = t.dpost(&path, &body).await;
+    assert_eq!(
+        (r.status, r.text.as_str()),
+        (StatusCode::OK, "OK: 4"),
+        "every line consumed once"
+    );
+    let count = || async {
+        sqlx::query_scalar::<_, i64>(
+            "select count(*) from hrms.device_punch_events where serial = $1",
+        )
+        .bind(&sn)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap()
+    };
+    assert_eq!(count().await, 2);
+    assert!(t.rejections(&sn, "malformed_line").await + t.rejections(&sn, "bad_pin").await >= 2);
+
+    // a resend is acknowledged again and never duplicated
+    assert_eq!(t.dpost(&path, &body).await.text, "OK: 4");
+    assert_eq!(count().await, 2);
+
+    // the cursor moves forward and is offered on the next handshake
+    let r = t.dget(&format!("/iclock/cdata?SN={sn}")).await;
+    assert!(r.text.contains("ATTLOGStamp=9001\n"), "{}", r.text);
+    // a lower stamp never moves it back
+    t.dpost(
+        &format!("/iclock/cdata?SN={sn}&table=ATTLOG&Stamp=5"),
+        &format!("7\t{}\n", local_now(5)),
+    )
+    .await;
+    assert!(
+        t.dget(&format!("/iclock/cdata?SN={sn}"))
+            .await
+            .text
+            .contains("ATTLOGStamp=9001\n")
+    );
+
+    // empty batch, far-future time and an unknown machine
+    assert_eq!(t.dpost(&path, "\n\n").await.text, "OK: 0");
+    let future = (chrono::Utc::now() + chrono::Duration::days(3)).format("%Y-%m-%d %H:%M:%S");
+    assert_eq!(
+        t.dpost(&path, &format!("7\t{future}\n")).await.text,
+        "OK: 1"
+    );
+    assert_eq!(count().await, 3, "only the stamp=5 punch was added");
+    let r = t
+        .dpost("/iclock/cdata?SN=NOPE12345&table=ATTLOG", &body)
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn iclock_roster_keeps_no_secrets_and_biometrics_are_discarded() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let sn = t.machine(&admin, json!({})).await;
+    let operlog = "OPLOG 4\t0\t2026-11-11 10:00:00\t0\t0\t0\t0\n\
+        USER PIN=7\tName=Priya M\tPri=0\tPasswd=1234\tCard=[0012345678]\n\
+        FP PIN=7\tFID=6\tSize=1336\tValid=1\tTMP=SECRETTEMPLATE\n\
+        USER PIN=1\tName=Boss\tPri=14\tPasswd=\tCard=\n";
+    let r = t
+        .dpost(
+            &format!("/iclock/cdata?SN={sn}&table=OPERLOG&Stamp=44"),
+            operlog,
+        )
+        .await;
+    assert_eq!((r.status, r.text.as_str()), (StatusCode::OK, "OK: 4"));
+    let rows: Vec<(String, Option<String>, bool)> = sqlx::query_as(
+        "select pin, name, is_device_admin from hrms.device_users where serial = $1 order by pin",
+    )
+    .bind(&sn)
+    .fetch_all(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("1".into(), Some("Boss".into()), true),
+            ("7".into(), Some("Priya M".into()), false)
+        ]
+    );
+    let dump: String = sqlx::query_scalar(
+        "select coalesce(jsonb_agg(u)::text, '') from hrms.device_users u where serial = $1",
+    )
+    .bind(&sn)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert!(!dump.contains("1234") && !dump.contains("0012345678") && !dump.contains("SECRET"));
+    assert!(
+        t.dget(&format!("/iclock/cdata?SN={sn}"))
+            .await
+            .text
+            .contains("OPERLOGStamp=44\n")
+    );
+
+    // OPERLOG with no users still advances the cursor
+    let r = t
+        .dpost(
+            &format!("/iclock/cdata?SN={sn}&table=OPERLOG&Stamp=50"),
+            "OPLOG 4\t0\t2026-11-11 10:00:00\n",
+        )
+        .await;
+    assert_eq!(r.text, "OK: 1");
+    assert!(
+        t.dget(&format!("/iclock/cdata?SN={sn}"))
+            .await
+            .text
+            .contains("OPERLOGStamp=50\n")
+    );
+    let r = t
+        .dpost(
+            &format!("/iclock/cdata?SN={sn}&table=USERINFO"),
+            "PIN=3\tName=Meera\tPri=0\tPasswd=9\n",
+        )
+        .await;
+    assert_eq!(r.text, "OK: 1");
+
+    // biometric tables: acknowledged, logged, never stored
+    for table in ["BIODATA", "FINGERTMP", "FACE"] {
+        let r = t
+            .dpost(
+                &format!("/iclock/cdata?SN={sn}&table={table}"),
+                "PIN=7\tTMP=AAAA\nPIN=8\tTMP=BBBB\n",
+            )
+            .await;
+        assert_eq!(
+            (r.status, r.text.as_str()),
+            (StatusCode::OK, "OK: 2"),
+            "{table}"
+        );
+    }
+    assert_eq!(t.rejections(&sn, "biometric_discarded").await, 3);
+    let leaked: i64 = sqlx::query_scalar(
+        "select count(*) from hrms.device_ingest_rejections where detail::text like '%AAAA%'",
+    )
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(leaked, 0);
+    // an unknown table is acknowledged but not logged as biometric
+    assert_eq!(
+        t.dpost(&format!("/iclock/cdata?SN={sn}&table=WHATEVER"), "x\n")
+            .await
+            .text,
+        "OK: 1"
+    );
+    assert_eq!(
+        t.dpost(&format!("/iclock/cdata?SN={sn}"), "x\ny\n")
+            .await
+            .text,
+        "OK: 2"
+    );
+}
+
+#[tokio::test]
+async fn iclock_photos_commands_and_limits() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let sn = t.machine(&admin, json!({})).await;
+    let jpeg: [u8; 12] = [
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9,
+    ];
+
+    // raw ATTPHOTO body: acknowledged; until storage exists only a fingerprint is logged
+    let mut body = b"PIN=20261111100203-7.jpg\nSN=X\nsize=12\nCMD=uploadphoto\0".to_vec();
+    body.extend_from_slice(&jpeg);
+    let r = t
+        .device(
+            Method::POST,
+            &format!("/iclock/cdata?SN={sn}&table=ATTPHOTO"),
+            body,
+            &[],
+        )
+        .await;
+    assert_eq!((r.status, r.text.as_str()), (StatusCode::OK, "OK"));
+    assert_eq!(t.rejections(&sn, "photo_storage_off").await, 1);
+
+    // multipart fdata
+    let mut mp = b"--B0und\r\nContent-Disposition: form-data; name=\"SN\"\r\n\r\nX\r\n--B0und\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"20261111100203-7.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".to_vec();
+    mp.extend_from_slice(&jpeg);
+    mp.extend_from_slice(b"\r\n--B0und--\r\n");
+    let ct = [("content-type", "multipart/form-data; boundary=B0und")];
+    let r = t
+        .device(Method::POST, &format!("/iclock/fdata?SN={sn}"), mp, &ct)
+        .await;
+    assert_eq!(r.text, "OK");
+    assert_eq!(t.rejections(&sn, "photo_storage_off").await, 2);
+
+    // unusable photos are acknowledged (never resent forever) and logged
+    let r = t
+        .dpost(
+            &format!("/iclock/fdata?SN={sn}"),
+            "PIN=20261111100203-7.jpg\0not a jpeg",
+        )
+        .await;
+    assert_eq!(r.text, "OK");
+    let r = t
+        .device(
+            Method::POST,
+            &format!("/iclock/fdata?SN={sn}"),
+            b"--B0und\r\nbroken".to_vec(),
+            &ct,
+        )
+        .await;
+    assert_eq!(r.text, "OK");
+    assert_eq!(t.rejections(&sn, "bad_photo").await, 2);
+    // unknown machine sending a photo
+    let r = t
+        .dpost("/iclock/fdata?SN=NOPE12345", "PIN=20261111100203-7.jpg\0x")
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    // devicecmd results for commands it never got: OK, nothing changes
+    let r = t
+        .dpost(
+            &format!("/iclock/devicecmd?SN={sn}"),
+            "ID=999999&Return=0&CMD=DATA\nID=x&Return=0\n",
+        )
+        .await;
+    assert_eq!((r.status, r.text.as_str()), (StatusCode::OK, "OK"));
+    assert_eq!(
+        t.dpost(&format!("/iclock/push?SN={sn}"), "anything")
+            .await
+            .text,
+        "OK"
+    );
+    assert_eq!(
+        t.dpost(&format!("/iclock/registry?SN={sn}"), "").await.text,
+        "OK"
+    );
+
+    // bodies over 4 MB: 413 + logged, both declared and streamed
+    let big = vec![b'a'; hrms_server::iclock::routes::MAX_BODY_BYTES + 1];
+    let r = t
+        .device(
+            Method::POST,
+            &format!("/iclock/cdata?SN={sn}&table=ATTLOG"),
+            big.clone(),
+            &[],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
+    let r = t
+        .device(
+            Method::POST,
+            &format!("/iclock/devicecmd?SN={sn}"),
+            big,
+            &[],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(t.rejections(&sn, "body_too_large").await, 2);
+}
+
+#[tokio::test]
+async fn iclock_is_off_without_a_secret_and_503_without_a_database() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let sn = t.machine(&admin, json!({})).await;
+    let base = |secret: bool| {
+        Config::from_lookup(move |k| match k {
+            "APP_ORIGIN" => Some(ORIGIN.into()),
+            "PROXY_SECRET" => Some(PROXY.into()),
+            "APP_SECRET" => Some("test-app-secret-fedcba9876543210fedcba".into()),
+            "DEVICE_INGEST_SECRET" if secret => Some(INGEST.into()),
+            _ => None,
+        })
+        .unwrap()
+    };
+    let catalog = Arc::new(rpc::Catalog::load(&t.pool).await.unwrap());
+    let off = router(AppState::new(
+        base(false),
+        Some(Db {
+            pool: t.pool.clone(),
+            catalog,
+        }),
+    ));
+    let req = || {
+        Request::get(format!("/iclock/cdata?SN={sn}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        off.oneshot(req()).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    let no_db = router(AppState::new(base(true), None));
+    assert_eq!(
+        no_db.oneshot(req()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    // the database refuses a wrong ingest secret (the hash is checked in SQL)
+    let wrong = hrms_server::db::service_call(
+        &t.pool,
+        "internal_device_gate",
+        json!({ "p_secret": "x".repeat(40), "p_serial": sn, "p_token": null, "p_ip_hash": "h", "p_endpoint": "handshake" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(wrong["code"], "bad_secret");
 }

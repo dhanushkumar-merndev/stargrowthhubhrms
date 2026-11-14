@@ -4,6 +4,7 @@ pub mod bootstrap;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod iclock;
 pub mod jobs;
 pub mod punch;
 pub mod rpc;
