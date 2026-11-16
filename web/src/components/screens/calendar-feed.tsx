@@ -46,7 +46,7 @@ export function CalendarFeed({ origin }: { origin?: string }) {
   return (
     <>
       <PageTitle title="Calendar subscription" back="/settings" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-2xl flex-col gap-4 p-page">
         <p className="text-body-md text-text-secondary">See company holidays and your approved leave in Google Calendar, Outlook or Apple Calendar. Calendar apps refresh it every few hours.</p>
         {a.error && <Banner>{a.error}</Banner>}
         {q.error ? (

@@ -266,7 +266,7 @@ describe("tabs", () => {
     expect(await screen.findByText("Asha")).toBeInTheDocument();
     expect(screen.getByText("Good morning,")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "My profile" })).toHaveTextContent("AR");
-    expect(screen.getByRole("link", { name: "Check in / out" })).toHaveAttribute("href", "/punch");
+    expect(within(screen.getByRole("region", { name: "Today" })).getByRole("link", { name: "My punch" })).toHaveAttribute("href", "/attendance/today");
   });
 });
 

@@ -43,7 +43,7 @@ export function ProfileScreen({ now = new Date() }: { now?: Date }) {
   return (
     <>
       <PageTitle title="My profile" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {notice && <Banner tone="success">{notice}</Banner>}
         <SectionCard>
           <div className="flex items-center gap-4">
@@ -277,7 +277,7 @@ export function Directory() {
   return (
     <>
       <PageTitle title="People" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-3 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-3 p-page">
         <TextField label="Search" type="search" placeholder="Name, ID or designation" value={search} onChange={(e) => setSearch(e.target.value)} />
         <div>
           <label htmlFor="team-filter" className="mb-1.5 block text-body-md font-medium text-text-secondary">

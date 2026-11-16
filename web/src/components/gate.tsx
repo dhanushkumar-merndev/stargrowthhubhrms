@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { useSession } from "@/lib/session";
 import { redirectFor } from "@/lib/routing";
+import { AppShell } from "./shell";
 import { Art, Button, Spinner } from "./ui";
 
 export function Gate({ children }: { children: React.ReactNode }) {
@@ -33,7 +34,7 @@ export function Gate({ children }: { children: React.ReactNode }) {
       </main>
     );
   }
-  return <>{children}</>;
+  return phase === "ready" ? <AppShell>{children}</AppShell> : <>{children}</>;
 }
 
 export function Splash() {

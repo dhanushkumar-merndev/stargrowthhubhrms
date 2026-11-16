@@ -105,7 +105,7 @@ export function HoursReport({ now = new Date() }: { now?: Date }) {
   return (
     <>
       <PageTitle title="Hours report" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         <div className="grid grid-cols-2 gap-3">
           <TextField label="From" type="date" value={from} max={to} onChange={(e) => (setFrom(e.target.value), setPage(0))} />
           <TextField label="To" type="date" value={to} min={from} onChange={(e) => (setTo(e.target.value), setPage(0))} />

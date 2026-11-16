@@ -76,7 +76,7 @@ export function CelebrationSettings() {
   return (
     <>
       <PageTitle title="Birthday and anniversary" back="/settings" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {q.error ? <ErrorState message="Could not load your choices." onRetry={() => void q.mutate()} /> : !q.data ? <LoadingState /> : <PrefsForm key={JSON.stringify(q.data)} prefs={q.data} saved={saved} onSaved={async () => { await q.mutate(); setSaved(true); }} onEdit={() => setSaved(false)} />}
       </div>
     </>

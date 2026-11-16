@@ -118,7 +118,7 @@ export function Punch({ deps }: { deps?: PunchDeps }) {
   return (
     <>
       <PageTitle title="Check in / out" back="/home" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-2xl flex-col gap-4 p-page">
         {done ? (
           <SectionCard className="bg-success-soft">
             <div role="status" className="flex flex-col gap-1">

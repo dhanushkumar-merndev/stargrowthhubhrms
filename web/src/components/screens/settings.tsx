@@ -50,7 +50,7 @@ export function Settings() {
   return (
     <div className="min-h-dvh">
       <PageTitle title="Settings" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-2xl flex-col gap-4 p-page">
         <SectionCard>
           <p className="text-title-md font-semibold">{context?.employee.name}</p>
           <p className="text-body-md text-text-secondary">

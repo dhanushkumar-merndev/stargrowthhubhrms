@@ -12,7 +12,7 @@ export function Explore() {
   return (
     <>
       <PageTitle title="Explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto grid max-w-xl items-start gap-4 p-page md:max-w-3xl md:grid-cols-2 lg:max-w-6xl lg:grid-cols-3">
         {modules.map((m) => (
           <ModuleCard
             key={m.id}

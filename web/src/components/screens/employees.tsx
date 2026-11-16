@@ -83,7 +83,7 @@ export function EmployeesList() {
           ) : undefined
         }
       />
-      <div className="mx-auto flex max-w-xl flex-col gap-3 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-3 p-page">
         <TextField label="Search" type="search" placeholder="Name, ID or email" value={search} onChange={(e) => setSearch(e.target.value)} />
         <PillTabs
           label="Status"
@@ -253,7 +253,7 @@ export function EmployeeNew({ now = new Date() }: { now?: Date }) {
     return (
       <>
         <PageTitle title="Employee added" back="/employees" />
-        <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+        <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
           <Banner tone="success">{done.code} can now sign in.</Banner>
           {warn && <Banner tone="warning">{warn}</Banner>}
           {done.password ? <TempPassword code={done.code} password={done.password} /> : <Banner tone="info">This account already existed. Reset the password from the employee page if needed.</Banner>}
@@ -276,7 +276,7 @@ export function EmployeeNew({ now = new Date() }: { now?: Date }) {
   return (
     <>
       <PageTitle title="Add employee" back="/employees" />
-      <form noValidate onSubmit={submit} className="mx-auto flex max-w-xl flex-col gap-3 p-page">
+      <form noValidate onSubmit={submit} className="mx-auto flex max-w-xl md:max-w-2xl flex-col gap-3 p-page">
         {error && <Banner>{error}</Banner>}
         <p className="rounded-row bg-background px-4 py-3 text-body-md" aria-live="polite">
           Employee ID: <span className="font-semibold">{preview.data?.employee_code ?? "…"}</span>
@@ -408,7 +408,7 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
   return (
     <>
       <PageTitle title={e.name} back="/employees" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {notice && <Banner tone="success">{notice}</Banner>}
         <SectionCard>
           <div className="flex items-center gap-4">

@@ -23,7 +23,7 @@ export function Attendance({ now = new Date() }: { now?: Date }) {
   return (
     <>
       <PageTitle title="My attendance" back="/home" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         <div className="flex items-center gap-2">
           <button type="button" aria-label="Previous month" onClick={() => setDelta((d) => d - 1)} className="grid size-12 place-items-center rounded-full">
             <Glyph name="arrow_back" />

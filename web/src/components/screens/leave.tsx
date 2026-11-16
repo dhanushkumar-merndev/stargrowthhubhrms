@@ -46,7 +46,7 @@ export function LeaveBalances() {
   return (
     <>
       <PageTitle title="Leave balance" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {shown != null && (
           <div className="flex items-center justify-between">
             <Button variant="text" onClick={() => setYear(shown - 1)} aria-label="Previous leave year">
@@ -296,7 +296,7 @@ export function LeaveApply({ editId, now = new Date() }: { editId?: string; now?
   return (
     <>
       <PageTitle title={title} back={editId ? `/requests/${editId}` : "/explore"} />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {done ? (
           <SectionCard className="bg-success-soft">
             <div role="status">
@@ -479,7 +479,7 @@ export function HolidayCalendar({ initialYear, now = new Date() }: { initialYear
   return (
     <>
       <PageTitle title="Holiday calendar" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         <div className="flex items-center justify-between">
           <Button variant="text" onClick={() => setYear(year - 1)} aria-label="Previous year">
             ‹ {year - 1}

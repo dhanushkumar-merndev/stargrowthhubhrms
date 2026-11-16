@@ -82,7 +82,7 @@ export function NotificationsScreen({ now = new Date() }: { now?: Date }) {
           ) : undefined
         }
       />
-      <div className="mx-auto flex max-w-xl flex-col gap-3 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-3 p-page">
         <Link href="/settings/notifications" className="text-body-md font-semibold text-primary">
           Notification settings
         </Link>
@@ -171,7 +171,7 @@ export function NotificationSettings({ support: forced }: { support?: PushSuppor
   return (
     <>
       <PageTitle title="Notification settings" back="/notifications" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {notice && <Banner tone="success">{notice}</Banner>}
         <SectionCard>
           <div className="flex flex-col gap-3">

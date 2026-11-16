@@ -30,7 +30,7 @@ export function AttendanceDay({ date, employeeId }: { date: string; employeeId?:
   return (
     <>
       <PageTitle title={dayLabel(date)} back={employeeId ? undefined : "/attendance"} />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {q.error ? (
           <ErrorState message={q.error.message} onRetry={() => void q.mutate()} />
         ) : !d ? (

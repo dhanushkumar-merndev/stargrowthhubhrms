@@ -14,7 +14,7 @@ export function Action() {
     <>
       <PageTitle title="Actions" />
       {scopes.length > 1 && (
-        <div className="mx-auto max-w-xl px-page pb-3 pt-8">
+        <div className="mx-auto max-w-xl px-page pb-3 pt-8 md:max-w-3xl lg:max-w-6xl">
           <div role="tablist" aria-label="Action groups" className="flex gap-2">
             {scopes.map((s) => (
               <button
@@ -38,7 +38,7 @@ export function Action() {
           <hr className="mt-3 border-border" />
         </div>
       )}
-      <div role="tabpanel" key={active.scope} className="mx-auto flex max-w-xl flex-col gap-2 px-page pb-8 pt-3">
+      <div role="tabpanel" key={active.scope} className="mx-auto flex max-w-xl flex-col gap-2 px-page pb-8 pt-3 md:grid md:max-w-3xl md:grid-cols-2 md:gap-3 lg:max-w-6xl lg:grid-cols-3">
         {active.items.map((it) => (
           <ActionRow key={it.href + it.label} art={it.art} label={it.label} subtitle={it.subtitle} tile={it.tile} href={it.href} />
         ))}

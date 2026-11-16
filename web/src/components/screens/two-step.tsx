@@ -226,7 +226,7 @@ export function TwoStepSettings() {
   return (
     <>
       <PageTitle title="Two-step sign-in" back="/settings" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-2xl flex-col gap-4 p-page">
         {notice && <Banner tone="success">{notice}</Banner>}
         {a.error && <Banner>{a.error}</Banner>}
         {q.error ? <ErrorState message="Could not load your sign-in settings." onRetry={() => void q.mutate()} /> : !q.data ? <LoadingState /> : <SectionCard>{body()}</SectionCard>}

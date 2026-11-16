@@ -94,7 +94,7 @@ export function MySalary() {
   return (
     <>
       <PageTitle title="Salary" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {req && (
           <Banner tone="info">
             Bank change request: {stateOf(req.state).label.toLowerCase()}.{" "}
@@ -172,7 +172,7 @@ export function BankDetails({ onDone }: { onDone?: () => void }) {
   return (
     <>
       <PageTitle title="Bank account" back="/salary" />
-      <form noValidate onSubmit={save} className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <form noValidate onSubmit={save} className="mx-auto flex max-w-xl md:max-w-2xl flex-col gap-4 p-page">
         {done ? (
           <>
             <Banner tone="success">{done}</Banner>
@@ -219,7 +219,7 @@ export function Payslips() {
   return (
     <>
       <PageTitle title="Payslips" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-2 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-2 p-page">
         {q.error ? (
           <ErrorState message={msg(q.error, "Could not load payslips.")} onRetry={() => q.mutate()} />
         ) : !q.data ? (
@@ -385,7 +385,7 @@ export function PayrollUploads({ now = new Date() }: { now?: Date }) {
   return (
     <>
       <PageTitle title="Payslip uploads" back="/workspace" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {notice && <Banner tone="success">{notice}</Banner>}
         <SectionCard>
           <div className="flex flex-col gap-3">
@@ -680,7 +680,7 @@ export function Documents({ now = new Date(), policiesOnly = false }: { now?: Da
   return (
     <>
       <PageTitle title={title} back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         {notice && <Banner tone="success">{notice}</Banner>}
         <section className="flex flex-col gap-2">
           <div className="flex items-center justify-between">

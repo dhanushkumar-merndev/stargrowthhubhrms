@@ -126,7 +126,7 @@ export function CorrectionForm({ initialDate, fix, now = new Date() }: { initial
   return (
     <>
       <PageTitle title="Request a correction" back={initialDate ? `/attendance/${initialDate}` : "/attendance"} />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-2xl flex-col gap-4 p-page">
         {done ? (
           <Done title="Correction sent" body={`HR will review your times for ${dayLabel(date)}.`} date={date} />
         ) : (
@@ -219,7 +219,7 @@ export function AttendanceRequestForm({ kind, initialDate, now = new Date() }: {
   return (
     <>
       <PageTitle title={title} back={initialDate ? `/attendance/${initialDate}` : "/action"} />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-2xl flex-col gap-4 p-page">
         {done ? (
           <Done title="Request sent" body={kind === "comp_off" ? "Once HR approves it, the comp-off is added to your leave balance." : "HR will review it and you will be notified."} date={wfh ? undefined : from} />
         ) : (

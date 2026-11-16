@@ -5017,3 +5017,78 @@ async fn with_a_machine_the_app_cannot_punch_in() {
             .unwrap();
     assert_eq!(n, 0);
 }
+
+#[tokio::test]
+async fn dashboard_is_scoped_per_role() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let (lead, member, other, hr) = t.reporting_lines(&admin).await;
+    let sn = t.machine(&admin, json!({})).await;
+    let pin = t.pins_of(&member.id).await[0].1.clone();
+    let path = format!("/iclock/cdata?SN={sn}&table=ATTLOG&Stamp=1");
+    let r = t
+        .dpost(&path, &format!("{pin}\t{}\t0\t1\t0\t0\t0\n", local_now(60)))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = t
+        .rpc(
+            "create_task",
+            json!({ "p_assigned_to": member.id, "p_title": "Ship it" }),
+            &lead.cookie,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = t.rpc("save_work_log", json!({ "p_id": null, "p_work_date": local_now(0)[..10], "p_title": "Calls",
+        "p_details": "Called customers", "p_minutes": 45, "p_task_id": null, "p_expected_version": null }), &member.cookie).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+
+    let m = t.rpc("get_dashboard", json!({}), &member.cookie).await;
+    assert_eq!(m.status, StatusCode::OK, "{}", m.body);
+    let me = &m.body["data"]["me"];
+    assert!(me["today"]["first_in_at"].is_string(), "{me}");
+    assert_eq!(me["month"]["days"], 1);
+    assert_eq!(me["tasks"]["open"], 1);
+    assert_eq!(
+        (
+            me["report_entries_today"].clone(),
+            me["report_minutes_today"].clone()
+        ),
+        (json!(1), json!(45))
+    );
+    assert_eq!(me["week"].as_array().unwrap().len(), 7);
+    assert_eq!(me["week"][6]["in"], true);
+    assert_eq!(
+        (
+            m.body["data"]["team"].clone(),
+            m.body["data"]["org"].clone()
+        ),
+        (Value::Null, Value::Null)
+    );
+
+    let l = t.rpc("get_dashboard", json!({}), &lead.cookie).await;
+    let team = &l.body["data"]["team"];
+    assert_eq!(
+        (
+            team["total"].clone(),
+            team["punched_in"].clone(),
+            team["in_now"].clone()
+        ),
+        (json!(1), json!(1), json!(1)),
+        "{team}"
+    );
+    assert_eq!(
+        (team["reports"].clone(), team["open_tasks"].clone()),
+        (json!(1), json!(1))
+    );
+    assert_eq!(l.body["data"]["org"], Value::Null);
+    let o = t.rpc("get_dashboard", json!({}), &other.cookie).await;
+    assert_eq!(o.body["data"]["team"], Value::Null);
+
+    let h = t.rpc("get_dashboard", json!({}), &hr.cookie).await;
+    let org = &h.body["data"]["org"];
+    assert!(org["total"].as_i64().unwrap() >= 5, "{org}");
+    assert_eq!(org["punched_in"], 1);
+    assert_eq!(org["week"].as_array().unwrap().len(), 7);
+    assert_eq!(org["week"][6]["punched_in"], 1);
+    assert_eq!(org["waiting"]["punch_fixes"], 0);
+}

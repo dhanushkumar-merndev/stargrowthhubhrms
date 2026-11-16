@@ -258,7 +258,7 @@ export function MyRequests() {
   return (
     <>
       <PageTitle title="My requests" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
         <PillTabs label="Filter" tabs={MY_FILTERS} value={filter} onChange={setFilter} />
         <List
           paged={paged}
@@ -322,7 +322,7 @@ export function MyRequestDetail({ id }: { id: string }) {
   return (
     <>
       <PageTitle title={requestTitle(r)} back="/requests" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page pb-32">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page pb-32">
         {notice && <Banner tone={notice.tone}>{notice.text}</Banner>}
         <Header r={r} />
         {r.state === "returned" && <Banner tone="warning">Returned for changes{ret ? `: “${ret}”` : "."} Edit and send it again.</Banner>}
@@ -408,7 +408,7 @@ export function ReviewQueue({ initialScope }: { initialScope?: Scope }) {
   return (
     <>
       <PageTitle title="Review requests" back="/explore" />
-      <div className="mx-auto flex max-w-xl flex-col gap-3 p-page">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-3 p-page">
         {scopes.length > 1 && <PillTabs label="Whose requests" tabs={scopes} value={scope} onChange={setScope} />}
         <PillTabs label="Kind" tabs={REVIEW_KINDS} value={kind} onChange={setKind} />
         <PillTabs
@@ -493,7 +493,7 @@ export function ApprovalDetail({ id }: { id: string }) {
     return (
       <>
         <PageTitle title={title} back="/approvals" />
-        <div className="mx-auto flex max-w-xl flex-col gap-4 p-page">
+        <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
           <Banner tone="warning">This request has no approver. As Admin you can review it yourself; say why. Reviewing locks the current version.</Banner>
           <TextArea label="Reason" value={openReason} onChange={setOpenReason} error={openReason.trim() ? null : undefined} rows={3} />
           <Button busy={busy} disabled={!openReason.trim()} onClick={() => open(openReason.trim())}>
@@ -528,7 +528,7 @@ export function ApprovalDetail({ id }: { id: string }) {
   return (
     <>
       <PageTitle title={title} back="/approvals" />
-      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page pb-32">
+      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page pb-32">
         {notice && <Banner tone={notice.tone}>{notice.text}</Banner>}
         <Header r={r} who extra={adminFallback ? <StatusChip label="Admin fallback" tone="warning" /> : null} />
         {r.kind === "leave" && bal && (
