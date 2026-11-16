@@ -195,6 +195,8 @@ export function EmployeeNew({ now = new Date() }: { now?: Date }) {
   const c = caps(context);
   const today = todayIn(context?.org.timezone ?? "Asia/Kolkata", now);
   const structure = useRpc<OrgStructure>("list_org_structure", {});
+  const [roleForPreview, setRoleForPreview] = useState("member");
+  const preview = useRpc<{ employee_code: string }>("preview_employee_code", { p_role: roleForPreview === "hr" || roleForPreview === "admin" ? roleForPreview : null });
   const [f, setF] = useState<NewEmployeeForm>({ employee_code: "", full_name: "", join_date: today, team_id: "", office_id: "", shift_id: "", department_id: "", role: "member", designation: "", business_email: "", business_phone: "", device_pin: "" });
   const [errors, setErrors] = useState<Partial<Record<keyof NewEmployeeForm, string>>>({});
   const [error, setError] = useState<string | null>(null);
@@ -209,7 +211,10 @@ export function EmployeeNew({ now = new Date() }: { now?: Date }) {
     return f[k] || (a.length === 1 ? a[0].id : "");
   };
   const form = s ? { ...f, team_id: pick("team_id", s.teams), office_id: pick("office_id", s.offices), shift_id: pick("shift_id", s.shifts) } : f;
-  const set = (k: keyof NewEmployeeForm) => (v: string) => setF({ ...form, [k]: v });
+  const set = (k: keyof NewEmployeeForm) => (v: string) => {
+    if (k === "role") setRoleForPreview(v);
+    setF({ ...form, [k]: v });
+  };
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     const errs = newEmployeeErrors(form, c.isAdmin);
@@ -231,7 +236,8 @@ export function EmployeeNew({ now = new Date() }: { now?: Date }) {
           setWarn(`The account was created, but the work details were not saved: ${msg(x, "try again on the employee page")}.`);
         }
       }
-      setDone({ id, code: fields.employee_code, password: res.data.temporary_password });
+      setDone({ id, code: res.data.employee_code ?? fields.employee_code ?? "", password: res.data.temporary_password });
+      void preview.mutate();
     } catch (x) {
       if (!(x instanceof ApiError && x.isNetwork)) op.current = null;
       if (x instanceof ApiError) setErrors(x.fieldErrors as Partial<Record<keyof NewEmployeeForm, string>>);
@@ -272,7 +278,11 @@ export function EmployeeNew({ now = new Date() }: { now?: Date }) {
       <PageTitle title="Add employee" back="/employees" />
       <form noValidate onSubmit={submit} className="mx-auto flex max-w-xl flex-col gap-3 p-page">
         {error && <Banner>{error}</Banner>}
-        <TextField label="Employee ID" value={form.employee_code} onChange={(e) => set("employee_code")(e.target.value.toUpperCase())} error={errors.employee_code} autoComplete="off" />
+        <p className="rounded-row bg-background px-4 py-3 text-body-md" aria-live="polite">
+          Employee ID: <span className="font-semibold">{preview.data?.employee_code ?? "…"}</span>
+          <span className="block text-body-sm text-text-secondary">Given automatically when you save.</span>
+        </p>
+        {errors.employee_code && <Banner>{errors.employee_code}</Banner>}
         <TextField label="Full name" value={form.full_name} onChange={(e) => set("full_name")(e.target.value)} error={errors.full_name} autoComplete="off" />
         <TextField label="Join date" type="date" value={form.join_date} onChange={(e) => set("join_date")(e.target.value)} error={errors.join_date} />
         <Select label="Role" value={form.role} onChange={set("role")} options={roles} error={errors.role} />
@@ -283,7 +293,7 @@ export function EmployeeNew({ now = new Date() }: { now?: Date }) {
         <TextField label="Designation (optional)" value={form.designation} onChange={(e) => set("designation")(e.target.value)} />
         <TextField label="Work email (optional)" type="email" value={form.business_email} onChange={(e) => set("business_email")(e.target.value)} error={errors.business_email} />
         <TextField label="Work phone (optional)" type="tel" value={form.business_phone} onChange={(e) => set("business_phone")(e.target.value)} error={errors.business_phone} />
-        <TextField label="Machine PIN (optional)" inputMode="numeric" value={form.device_pin} onChange={(e) => set("device_pin")(e.target.value)} error={errors.device_pin} hint="Links the new hire to their ID on the attendance machine." />
+        <TextField label="Machine PIN (optional)" inputMode="numeric" value={form.device_pin} onChange={(e) => set("device_pin")(e.target.value)} error={errors.device_pin} hint="Leave empty and a new PIN is given and sent to the machines automatically. Fill it only if the person is already on a machine." />
         <Button type="submit" busy={busy}>
           Create account
         </Button>

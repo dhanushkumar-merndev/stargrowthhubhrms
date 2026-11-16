@@ -3873,3 +3873,265 @@ async fn two_step_sign_in_end_to_end() {
         StatusCode::NOT_FOUND
     );
 }
+
+// ============================================================ automatic IDs, PINs, machine fetch
+
+impl T {
+    /// Provision without an employee code; returns the response data.
+    async fn hire_auto(&self, admin: &str, role: Option<&str>, extra: Value) -> Value {
+        let (_, team, shift, office) = self.org_ids().await;
+        let mut body = json!({
+            "operation_id": Uuid::new_v4(),
+            "fields": { "full_name": "Auto Person", "join_date": "2026-01-05",
+                        "team_id": team, "office_id": office, "shift_id": shift, "role": role }
+        });
+        if let (Value::Object(m), Value::Object(e)) = (&mut body, extra) {
+            m.extend(e);
+        }
+        let r = self.post("/v1/admin/users", body, Some(admin)).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        r.body["data"].clone()
+    }
+
+    async fn pins_of(&self, employee: &str) -> Vec<(Option<String>, String)> {
+        sqlx::query_as(
+            "select serial, pin from hrms.device_user_links where employee_id = $1::uuid and unlinked_at is null order by pin",
+        )
+        .bind(employee)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn employee_ids_are_generated_per_role() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let preview = t.rpc("preview_employee_code", json!({}), &admin).await;
+    assert_eq!(preview.status, StatusCode::OK, "{}", preview.body);
+    let e1 = t.hire_auto(&admin, None, json!({})).await;
+    assert_eq!(e1["employee_code"], preview.body["data"]["employee_code"]);
+    let c1 = e1["employee_code"].as_str().unwrap().to_owned();
+    assert!(c1.starts_with("EMP") && c1.len() == 7, "{c1}");
+    let e2 = t.hire_auto(&admin, None, json!({})).await;
+    let n = |c: &str, p: &str| c[p.len()..].parse::<u32>().unwrap();
+    assert_eq!(
+        n(e2["employee_code"].as_str().unwrap(), "EMP"),
+        n(&c1, "EMP") + 1
+    );
+    // A typed code with the same prefix moves the counter on; numbers never go back.
+    t.hire(&admin, "EMP0950", None).await;
+    let e3 = t.hire_auto(&admin, Some("member"), json!({})).await;
+    assert_eq!(e3["employee_code"], "EMP0951");
+    let hr = t.hire_auto(&admin, Some("hr"), json!({})).await;
+    assert!(
+        hr["employee_code"].as_str().unwrap().starts_with("HR"),
+        "{hr}"
+    );
+    let ad = t.hire_auto(&admin, Some("admin"), json!({})).await;
+    assert!(
+        ad["employee_code"].as_str().unwrap().starts_with("ADM"),
+        "{ad}"
+    );
+    let p = t
+        .rpc("preview_employee_code", json!({ "p_role": "hr" }), &admin)
+        .await;
+    let next_hr = n(hr["employee_code"].as_str().unwrap(), "HR") + 1;
+    assert_eq!(p.body["data"]["employee_code"], format!("HR{next_hr:04}"));
+    // The generated person can sign in with the generated ID.
+    let r = t
+        .login(
+            e1["employee_code"].as_str().unwrap(),
+            e1["temporary_password"].as_str().unwrap(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    // Employees cannot preview codes.
+    let emp = r.session_cookie().unwrap();
+    let emp = t
+        .change_password(
+            &emp,
+            e1["temporary_password"].as_str().unwrap(),
+            "Auto-Person-Pass-77",
+        )
+        .await
+        .session_cookie()
+        .unwrap();
+    let r = t.rpc("preview_employee_code", json!({}), &emp).await;
+    assert_eq!(r.code(), "ACCESS_DENIED", "{}", r.body);
+}
+
+#[tokio::test]
+async fn new_hires_get_a_machine_pin_automatically() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let sn = t.machine(&admin, json!({})).await;
+    sqlx::query("update hrms.attendance_devices set commands_enabled = true where serial = $1")
+        .bind(&sn)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let a = t.hire_auto(&admin, None, json!({})).await;
+    let b = t.hire_auto(&admin, None, json!({})).await;
+    let pa = t.pins_of(a["employee_id"].as_str().unwrap()).await;
+    let pb = t.pins_of(b["employee_id"].as_str().unwrap()).await;
+    assert_eq!(pa.len(), 1, "{pa:?}");
+    assert_eq!(pb.len(), 1, "{pb:?}");
+    assert!(pa[0].0.is_none(), "an automatic PIN works on every machine");
+    assert_eq!(
+        pb[0].1.parse::<u64>().unwrap(),
+        pa[0].1.parse::<u64>().unwrap() + 1
+    );
+    // ... and each is queued to the machine.
+    let queued: i64 = sqlx::query_scalar(
+        "select count(*) from hrms.device_commands where serial = $1 and kind = 'user_upsert' and status = 'queued'",
+    )
+    .bind(&sn)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(queued, 2);
+    // Someone hired with a PIN that already exists on the machine keeps that one only.
+    t.dpost(
+        &format!("/iclock/cdata?SN={sn}&table=OPERLOG&Stamp=5"),
+        "USER PIN=900\tName=Machine Only\tPri=0\n",
+    )
+    .await;
+    let c = t
+        .hire_auto(
+            &admin,
+            None,
+            json!({ "device_pin": "900", "device_serial": sn }),
+        )
+        .await;
+    let pc = t.pins_of(c["employee_id"].as_str().unwrap()).await;
+    assert_eq!(pc, vec![(Some(sn.clone()), "900".to_owned())]);
+    // The next automatic PIN skips numbers the machine already uses.
+    let d = t.hire_auto(&admin, None, json!({})).await;
+    let pd = t.pins_of(d["employee_id"].as_str().unwrap()).await;
+    assert_eq!(pd[0].1, "901");
+}
+
+#[tokio::test]
+async fn hr_fetches_people_from_machines() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let sn = t.machine(&admin, json!({})).await;
+    sqlx::query("update hrms.attendance_devices set commands_enabled = true, oplog_stamp = 99 where serial = $1")
+        .bind(&sn)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let r = t.rpc("fetch_device_users", json!({}), &admin).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(r.body["data"]["machines"].as_i64().unwrap() >= 1);
+    let stamp: Option<i64> =
+        sqlx::query_scalar("select oplog_stamp from hrms.attendance_devices where serial = $1")
+            .bind(&sn)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(stamp, Some(0), "the next handshake re-sends the user list");
+    // Asking twice does not stack commands.
+    t.rpc("fetch_device_users", json!({}), &admin).await;
+    let open: i64 = sqlx::query_scalar(
+        "select count(*) from hrms.device_commands where serial = $1 and kind = 'user_query' and status in ('queued','sent')",
+    )
+    .bind(&sn)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(open, 1);
+    let poll = t.dget(&format!("/iclock/getrequest?SN={sn}")).await;
+    assert!(poll.text.contains(":DATA QUERY USERINFO"), "{}", poll.text);
+    // The machine answers on /iclock/querydata.
+    let r = t
+        .dpost(
+            &format!("/iclock/querydata?SN={sn}&type=tabledata&tablename=user&count=2&packcnt=1&packidx=1"),
+            "user uid=1\tcardno=\tpin=31\tpassword=999\tgroup=1\tname=Ravi K\tprivilege=0\nuser uid=2\tpin=32\tname=Meena\tprivilege=14\n",
+        )
+        .await;
+    assert_eq!((r.status, r.text.as_str()), (StatusCode::OK, "OK"));
+    let rows: Vec<(String, Option<String>, bool)> = sqlx::query_as(
+        "select pin, name, is_device_admin from hrms.device_users where serial = $1 order by pin",
+    )
+    .bind(&sn)
+    .fetch_all(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("31".into(), Some("Ravi K".into()), false),
+            ("32".into(), Some("Meena".into()), true)
+        ]
+    );
+    // They show under "New from machine" until someone is hired with their PIN.
+    let pins = |r: &Resp| -> Vec<String> {
+        r.body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["serial"] == json!(sn))
+            .map(|p| p["pin"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let list = t.rpc("list_machine_people", json!({}), &admin).await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.body);
+    assert_eq!(pins(&list), vec!["31", "32"]);
+    let hired = t
+        .hire_auto(
+            &admin,
+            None,
+            json!({ "device_pin": "31", "device_serial": sn }),
+        )
+        .await;
+    assert_eq!(
+        t.pins_of(hired["employee_id"].as_str().unwrap()).await,
+        vec![(Some(sn.clone()), "31".to_owned())]
+    );
+    assert_eq!(
+        pins(&t.rpc("list_machine_people", json!({}), &admin).await),
+        vec!["32"]
+    );
+    // Other query tables are acknowledged and ignored.
+    let r = t
+        .dpost(
+            &format!("/iclock/querydata?SN={sn}&tablename=fingertmp"),
+            "pin=31\ttmp=SECRET\n",
+        )
+        .await;
+    assert_eq!(r.text, "OK");
+    // Employees cannot ask; an unknown machine id is refused.
+    let e = t.hire_auto(&admin, None, json!({})).await;
+    let c = t
+        .login(
+            e["employee_code"].as_str().unwrap(),
+            e["temporary_password"].as_str().unwrap(),
+        )
+        .await
+        .session_cookie()
+        .unwrap();
+    let c = t
+        .change_password(
+            &c,
+            e["temporary_password"].as_str().unwrap(),
+            "Fetch-Person-Pass-77",
+        )
+        .await
+        .session_cookie()
+        .unwrap();
+    assert_eq!(
+        t.rpc("fetch_device_users", json!({}), &c).await.code(),
+        "ACCESS_DENIED"
+    );
+    let r = t
+        .rpc(
+            "fetch_device_users",
+            json!({ "p_device_id": Uuid::new_v4() }),
+            &admin,
+        )
+        .await;
+    assert_eq!(r.code(), "VALIDATION_FAILED", "{}", r.body);
+}

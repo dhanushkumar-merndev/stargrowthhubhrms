@@ -316,6 +316,28 @@ async fn handle_post(
         return Ok(if is_ok(&r) { ok("OK") } else { not_found() });
     }
 
+    // Answer to DATA QUERY USERINFO: `user uid=..\tpin=..\tname=..\tprivilege=..`
+    // lines (same fields as an OPERLOG USER record). Only the roster is kept.
+    if endpoint == Endpoint::Querydata
+        && param(q, &["tablename", "TableName"]).is_some_and(|t| t.eq_ignore_ascii_case("user"))
+    {
+        let Some(bytes) = read_body(headers, body).await else {
+            return Ok(too_large(ctx, "querydata").await);
+        };
+        let users = p::parse_user_records("OPERLOG", &latin1(&bytes));
+        if users.is_empty() {
+            let g = ctx.gate("querydata", json!({})).await?;
+            return Ok(if is_ok(&g) { ok("OK") } else { not_found() });
+        }
+        let r = ctx
+            .call(
+                "internal_ingest_device_users",
+                json!({ "p_users": users, "p_stamp": Value::Null }),
+            )
+            .await?;
+        return Ok(if is_ok(&r) { ok("OK") } else { not_found() });
+    }
+
     if endpoint != Endpoint::Cdata && endpoint != Endpoint::Fdata {
         // Other pushes: acknowledge, never act.
         let g = ctx.gate(endpoint.as_str(), json!({})).await?;

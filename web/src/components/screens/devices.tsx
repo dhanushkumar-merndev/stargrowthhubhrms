@@ -7,7 +7,9 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
-import { rpc } from "@/lib/api";
+import { ApiError, newOperationId, post, rpc } from "@/lib/api";
+import { type OrgStructure, toCsv } from "@/lib/people";
+import { Select, activeOpts } from "../forms";
 import {
   COMMAND_KIND,
   COMMAND_STATUS,
@@ -43,6 +45,12 @@ import {
   type UnmatchedPin,
   DEVICE_TABS as TABS,
   type DeviceTab as TabKey,
+  type HireDefaults,
+  type MachinePerson,
+  hireDefaultsErrors,
+  machineHireBody,
+  machineHireName,
+  machinePersonKey,
 } from "@/lib/devices";
 import { clock, todayIn } from "@/lib/attendance";
 import { useLive, type Conn } from "@/lib/live";
@@ -531,7 +539,8 @@ export function Unmatched() {
   return (
     <section className="flex flex-col gap-3" aria-label="Unmatched">
       <div>
-        <h2 className="text-title-md font-semibold">Unmatched punches</h2>
+        <MachinePeople onAdded={() => void reload()} />
+        <h2 className="mt-4 text-title-md font-semibold">Unmatched punches</h2>
         <p className="text-body-sm text-text-secondary">Machine user numbers (PINs) not linked to anyone. Link one and its waiting punches attach to that person.</p>
       </div>
       {notice && <Banner tone={notice.ok ? "success" : "error"}>{notice.text}</Banner>}
@@ -1086,5 +1095,159 @@ export function EnrolForm({
         </Link>
       </div>
     </Sheet>
+  );
+}
+
+// ======================================================= New from machine
+
+type Hired = { name: string; pin: string; code: string; password: string | null; error?: string };
+
+export function MachinePeople({ onAdded, now = new Date() }: { onAdded?: () => void; now?: Date }) {
+  const { context } = useSession();
+  const people = useRpc<MachinePerson[]>("list_machine_people");
+  const structure = useRpc<OrgStructure>("list_org_structure", {});
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [d, setD] = useState<HireDefaults>({ team_id: "", office_id: "", shift_id: "", join_date: todayIn(context?.org.timezone ?? "Asia/Kolkata", now) });
+  const [errors, setErrors] = useState<Partial<Record<keyof HireDefaults, string>>>({});
+  const [busy, setBusy] = useState<"fetch" | "add" | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [hired, setHired] = useState<Hired[]>([]);
+  const s = structure.data;
+  const one = (items?: { id: string; active: boolean }[]) => {
+    const a = (items ?? []).filter((x) => x.active);
+    return a.length === 1 ? a[0].id : "";
+  };
+  const defaults: HireDefaults = s ? { ...d, team_id: d.team_id || one(s.teams), office_id: d.office_id || one(s.offices), shift_id: d.shift_id || one(s.shifts) } : d;
+
+  const fetchUsers = async () => {
+    setBusy("fetch");
+    setNotice(null);
+    try {
+      const r = await rpc<{ machines: number; queued: number }>("fetch_device_users", {});
+      setNotice({
+        ok: true,
+        text: r.machines === 0 ? "No active machines to ask." : `Asked ${r.machines} machine${r.machines === 1 ? "" : "s"} for their user list. New people appear here within a minute or two.`,
+      });
+      setTimeout(() => void people.mutate(), 15000);
+    } catch (e) {
+      setNotice({ ok: false, text: msg(e, "Could not ask the machines.") });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const add = async (list: MachinePerson[]) => {
+    const errs = hireDefaultsErrors(defaults);
+    setErrors(errs);
+    if (Object.keys(errs).length || list.length === 0) return;
+    setBusy("add");
+    setNotice(null);
+    const out: Hired[] = [];
+    for (const p of list) {
+      try {
+        const r = await post<{ data: { employee_code?: string; temporary_password: string | null } }>("/admin/users", machineHireBody(p, defaults, newOperationId()));
+        out.push({ name: machineHireName(p), pin: p.pin, code: r.data.employee_code ?? "", password: r.data.temporary_password });
+      } catch (e) {
+        out.push({ name: machineHireName(p), pin: p.pin, code: "", password: null, error: msg(e, "Could not add.") });
+        if (e instanceof ApiError && e.code === "ACTIVE_EMPLOYEE_CAP_REACHED") break;
+      }
+    }
+    setHired((h) => [...out, ...h]);
+    setPicked(new Set());
+    const ok = out.filter((x) => !x.error).length;
+    setNotice({ ok: ok === out.length, text: `${ok} of ${list.length} added.${ok < out.length ? " See the list below for the ones that failed." : ""}` });
+    setBusy(null);
+    await people.mutate();
+    onAdded?.();
+  };
+
+  if (people.error || structure.error) return <ErrorState message={msg(people.error ?? structure.error, "Could not load the machine list.")} onRetry={() => void people.mutate()} />;
+  if (!people.data || !s) return <LoadingState />;
+  const list = people.data;
+  const toggle = (k: string) => setPicked((x) => { const n = new Set(x); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const chosen = list.filter((p) => picked.has(machinePersonKey(p)));
+
+  return (
+    <section aria-label="New from machine" className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="text-title-md font-semibold">New from machine</h2>
+          <p className="text-body-sm text-text-secondary">People registered on a machine who are not in the app yet. Adding them creates their account with an automatic Employee ID and keeps their machine PIN.</p>
+        </div>
+        <Button variant="outlined" busy={busy === "fetch"} onClick={fetchUsers}>
+          Fetch from machines
+        </Button>
+      </div>
+      {notice && <Banner tone={notice.ok ? "success" : "error"}>{notice.text}</Banner>}
+      {list.length === 0 ? (
+        <EmptyState art="check_circle" title="Everyone is in the app" body="Tap “Fetch from machines” to check for people added on a machine." />
+      ) : (
+        <SectionCard>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Select label="Team" value={defaults.team_id} onChange={(v) => setD({ ...defaults, team_id: v })} options={activeOpts(s.teams)} placeholder="Choose a team" error={errors.team_id} />
+            <Select label="Office" value={defaults.office_id} onChange={(v) => setD({ ...defaults, office_id: v })} options={activeOpts(s.offices)} placeholder="Choose an office" error={errors.office_id} />
+            <Select label="Shift" value={defaults.shift_id} onChange={(v) => setD({ ...defaults, shift_id: v })} options={activeOpts(s.shifts)} placeholder="Choose a shift" error={errors.shift_id} />
+            <TextField label="Join date" type="date" value={defaults.join_date} onChange={(e) => setD({ ...defaults, join_date: e.target.value })} error={errors.join_date} />
+          </div>
+          <ul className="mt-3 divide-y divide-border" aria-label="People on machines">
+            {list.map((p) => {
+              const k = machinePersonKey(p);
+              return (
+                <li key={k}>
+                  <label className="flex min-h-12 items-center gap-3 py-2">
+                    <input type="checkbox" className="size-5" checked={picked.has(k)} onChange={() => toggle(k)} aria-label={`Select ${machineHireName(p)}`} />
+                    <span className="w-14 font-semibold tabular-nums">{p.pin}</span>
+                    <span className="min-w-0 flex-1">
+                      {machineHireName(p)}
+                      {p.is_device_admin && <span className="text-text-secondary"> · machine admin</span>}
+                      <span className="block text-body-sm text-text-secondary">
+                        {p.device_label ?? p.serial} · {p.punches} punch{p.punches === 1 ? "" : "es"}
+                      </span>
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button busy={busy === "add"} disabled={busy !== null || chosen.length === 0} onClick={() => add(chosen)}>
+              Add selected ({chosen.length})
+            </Button>
+            <Button variant="outlined" disabled={busy !== null} onClick={() => add(list)}>
+              Add all ({list.length})
+            </Button>
+          </div>
+        </SectionCard>
+      )}
+      {hired.length > 0 && (
+        <SectionCard>
+          <h3 className="text-title-sm font-semibold">Added</h3>
+          <p className="text-body-sm text-text-secondary">Give each person their ID and temporary password. Passwords are shown only now.</p>
+          <ul className="mt-2 divide-y divide-border" aria-label="Added people">
+            {hired.map((h, i) => (
+              <li key={`${h.pin}-${i}`} className="flex flex-wrap items-center gap-x-3 py-2">
+                <span className="min-w-0 flex-1">{h.name} <span className="text-text-secondary">· PIN {h.pin}</span></span>
+                {h.error ? <span className="text-body-sm text-error">{h.error}</span> : <span className="font-mono">{h.code} · {h.password ?? "already existed"}</span>}
+              </li>
+            ))}
+          </ul>
+          <Button
+            variant="outlined"
+            className="mt-2"
+            onClick={() => {
+              const csv = toCsv([["Name", "Machine PIN", "Employee ID", "Temporary password"], ...hired.filter((h) => !h.error).map((h) => [h.name, h.pin, h.code, h.password ?? ""])]);
+              const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "new-employees.csv";
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }}
+          >
+            Download list
+          </Button>
+        </SectionCard>
+      )}
+    </section>
   );
 }

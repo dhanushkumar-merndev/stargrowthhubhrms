@@ -679,7 +679,8 @@ export const normalizeCode = (s: string) => s.toUpperCase().replace(/\s/g, "");
 
 export function newEmployeeErrors(f: NewEmployeeForm, isAdmin: boolean): Partial<Record<keyof NewEmployeeForm, string>> {
   const e: Partial<Record<keyof NewEmployeeForm, string>> = {};
-  if (!/^[A-Z0-9-]{3,32}$/.test(normalizeCode(f.employee_code))) e.employee_code = 'Use 3–32 letters, digits or "-".';
+  // Empty → the server generates the ID (EMP0001 / HR0001 / ADM0001).
+  if (normalizeCode(f.employee_code) && !/^[A-Z0-9-]{3,32}$/.test(normalizeCode(f.employee_code))) e.employee_code = 'Use 3–32 letters, digits or "-".';
   if (f.full_name.trim().length < 2) e.full_name = "Enter the full name.";
   else if (f.full_name.trim().length > 200) e.full_name = "Keep the name under 200 characters.";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(f.join_date) || Number.isNaN(Date.parse(f.join_date))) e.join_date = "Choose the join date.";
@@ -697,7 +698,6 @@ export function newEmployeeErrors(f: NewEmployeeForm, isAdmin: boolean): Partial
 /** Splits the provision fields from the details set afterwards with update_employee. */
 export function provisionPayload(f: NewEmployeeForm) {
   const fields: Record<string, string> = {
-    employee_code: normalizeCode(f.employee_code),
     full_name: f.full_name.trim(),
     join_date: f.join_date,
     team_id: f.team_id,
@@ -705,6 +705,7 @@ export function provisionPayload(f: NewEmployeeForm) {
     shift_id: f.shift_id,
     role: f.role,
   };
+  if (normalizeCode(f.employee_code)) fields.employee_code = normalizeCode(f.employee_code);
   if (f.department_id) fields.department_id = f.department_id;
   const after: Record<string, string> = {};
   if (f.designation.trim()) after.designation = f.designation.trim();

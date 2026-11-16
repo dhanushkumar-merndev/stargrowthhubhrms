@@ -107,12 +107,13 @@ describe("Employees list", () => {
 });
 
 describe("Add employee", () => {
-  it("HR cannot pick HR/Admin; a single team is chosen; the temporary password is shown once", async () => {
+  it("HR cannot pick HR/Admin; a single team is chosen; the ID is automatic; the temporary password is shown once", async () => {
     const user = userEvent.setup();
     const calls = mockFetch({
       ...session("hr"),
       "/rpc/list_org_structure": () => ok(structure),
-      "/admin/users": () => ok({ employee_id: "n1", temporary_password: "Tmp-9x!k" }),
+      "/rpc/preview_employee_code": () => ok({ employee_code: "EMP0010" }),
+      "/admin/users": () => ok({ employee_id: "n1", employee_code: "EMP0010", temporary_password: "Tmp-9x!k" }),
       "/rpc/get_employee": () => ok({ version: 1 }),
       "/rpc/update_employee": () => ok({}),
     });
@@ -122,24 +123,27 @@ describe("Add employee", () => {
     expect(screen.getByLabelText("Team")).toHaveValue("t1");
     expect(screen.getByLabelText("Office")).toHaveValue("");
     expect(within(screen.getByLabelText("Shift")).queryByRole("option", { name: "Retired" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Employee ID")).not.toBeInTheDocument();
+    expect(await screen.findByText("EMP0010")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create account" }));
-    expect(screen.getByText(/Use 3–32 letters/)).toBeInTheDocument();
+    expect(screen.queryByText(/Use 3–32 letters/)).not.toBeInTheDocument();
     expect(screen.getByText("Choose an office.")).toBeInTheDocument();
     expect(calls.some((c) => c.path === "/admin/users")).toBe(false);
-    await user.type(screen.getByLabelText("Employee ID"), "emp010");
     await user.type(screen.getByLabelText("Full name"), "Meena S");
     await user.selectOptions(screen.getByLabelText("Office"), "o2");
     await user.type(screen.getByLabelText("Designation (optional)"), "Clerk");
     await user.click(screen.getByRole("button", { name: "Create account" }));
     expect(await screen.findByLabelText("Temporary password")).toHaveTextContent("Tmp-9x!k");
     const sent = calls.find((c) => c.path === "/admin/users")!.body as { operation_id: string; fields: Record<string, string> };
-    expect(sent.fields).toMatchObject({ employee_code: "EMP010", team_id: "t1", office_id: "o2", shift_id: "s1", role: "member", join_date: "2026-11-14" });
+    expect(sent.fields.employee_code).toBeUndefined();
+    expect(screen.getByText("EMP0010 can now sign in.")).toBeInTheDocument();
+    expect(sent.fields).toMatchObject({ team_id: "t1", office_id: "o2", shift_id: "s1", role: "member", join_date: "2026-11-14" });
     expect(sent.operation_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(calls.find((c) => c.path === "/rpc/update_employee")!.body).toEqual({ p_employee_id: "n1", p_patch: { designation: "Clerk" }, p_expected_version: 1 });
     expect(screen.getByRole("link", { name: "Open employee" })).toHaveAttribute("href", "/employees/n1");
   });
 
-  it("a duplicate code is shown on the field; the account is not half-made on a details failure", async () => {
+  it("a server error is shown; the account is not half-made on a details failure", async () => {
     const user = userEvent.setup();
     let n = 0;
     mockFetch({
@@ -150,8 +154,7 @@ describe("Add employee", () => {
       "/rpc/update_employee": () => fail(422, "VALIDATION_FAILED", "Bad email"),
     });
     wrap(<EmployeeNew now={NOW} />);
-    await user.type(await screen.findByLabelText("Employee ID"), "EMP001");
-    await user.type(screen.getByLabelText("Full name"), "Dup Person");
+    await user.type(await screen.findByLabelText("Full name"), "Dup Person");
     await user.type(screen.getByLabelText("Work email (optional)"), "dup@acme.test");
     await user.click(screen.getByRole("button", { name: "Create account" }));
     expect(await screen.findByText("Already used")).toBeInTheDocument();

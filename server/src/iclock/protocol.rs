@@ -939,3 +939,27 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod querydata_users {
+    use super::*;
+
+    #[test]
+    fn querydata_user_lines_parse_like_operlog() {
+        let body = "user uid=1\tcardno=\tpin=7\tpassword=123\tgroup=1\tname=Asha Rao\tprivilege=14\n\
+                    user uid=2\tpin=08\tname=\tprivilege=0\r\n\
+                    user uid=3\tpin=a-b\tname=Bad\n\
+                    FP PIN=7\tFID=1\tTMP=xxxx\n";
+        let u = parse_user_records("OPERLOG", body);
+        assert_eq!(u.len(), 2);
+        assert_eq!(
+            (
+                u[0].pin.as_str(),
+                u[0].name.as_deref(),
+                u[0].privilege.as_deref()
+            ),
+            ("7", Some("Asha Rao"), Some("14"))
+        );
+        assert_eq!((u[1].pin.as_str(), u[1].name.as_deref()), ("08", None));
+    }
+}
