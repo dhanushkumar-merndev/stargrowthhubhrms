@@ -20,8 +20,7 @@ use crate::{app::AppState, db};
 /// 32 random bytes as unpadded base64url.
 pub fn token_ok(t: &str) -> bool {
     t.len() == 43
-        && t
-            .bytes()
+        && t.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
@@ -71,7 +70,14 @@ fn date(v: &Value) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(v.as_str()?, "%Y-%m-%d").ok()
 }
 
-fn all_day(out: &mut String, uid: &str, day: NaiveDate, summary: &str, stamp: &str, transparent: bool) {
+fn all_day(
+    out: &mut String,
+    uid: &str,
+    day: NaiveDate,
+    summary: &str,
+    stamp: &str,
+    transparent: bool,
+) {
     let next = day + Duration::days(1);
     for l in [
         "BEGIN:VEVENT".to_string(),
@@ -80,7 +86,10 @@ fn all_day(out: &mut String, uid: &str, day: NaiveDate, summary: &str, stamp: &s
         format!("DTSTART;VALUE=DATE:{}", day.format("%Y%m%d")),
         format!("DTEND;VALUE=DATE:{}", next.format("%Y%m%d")),
         format!("SUMMARY:{}", escape(summary)),
-        format!("TRANSP:{}", if transparent { "TRANSPARENT" } else { "OPAQUE" }),
+        format!(
+            "TRANSP:{}",
+            if transparent { "TRANSPARENT" } else { "OPAQUE" }
+        ),
         "END:VEVENT".to_string(),
     ] {
         out.push_str(&fold(&l));
@@ -98,7 +107,10 @@ fn slot_label(slots: &[&str]) -> &'static str {
 /// The whole VCALENDAR for one feed.
 pub fn build_ics(feed: &Value, now: DateTime<Utc>) -> String {
     let stamp = now.format("%Y%m%dT%H%M%SZ").to_string();
-    let org = feed.get("org_name").and_then(Value::as_str).unwrap_or("HRMS");
+    let org = feed
+        .get("org_name")
+        .and_then(Value::as_str)
+        .unwrap_or("HRMS");
     let mut out = String::new();
     for l in [
         "BEGIN:VCALENDAR".to_string(),
@@ -106,22 +118,46 @@ pub fn build_ics(feed: &Value, now: DateTime<Utc>) -> String {
         "PRODID:-//HRMS//Calendar feed//EN".to_string(),
         "CALSCALE:GREGORIAN".to_string(),
         "METHOD:PUBLISH".to_string(),
-        format!("X-WR-CALNAME:{}", escape(&format!("{org} · Holidays and leave"))),
+        format!(
+            "X-WR-CALNAME:{}",
+            escape(&format!("{org} · Holidays and leave"))
+        ),
         "REFRESH-INTERVAL;VALUE=DURATION:PT6H".to_string(),
         "X-PUBLISHED-TTL:PT6H".to_string(),
     ] {
         out.push_str(&fold(&l));
     }
     let empty = Vec::new();
-    for h in feed.get("holidays").and_then(Value::as_array).unwrap_or(&empty) {
-        let (Some(id), Some(day)) = (h.get("id").and_then(Value::as_str), h.get("date").and_then(date)) else {
+    for h in feed
+        .get("holidays")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+    {
+        let (Some(id), Some(day)) = (
+            h.get("id").and_then(Value::as_str),
+            h.get("date").and_then(date),
+        ) else {
             continue;
         };
         let name = h.get("name").and_then(Value::as_str).unwrap_or("Holiday");
-        all_day(&mut out, &format!("holiday-{id}@hrms"), day, name, &stamp, true);
+        all_day(
+            &mut out,
+            &format!("holiday-{id}@hrms"),
+            day,
+            name,
+            &stamp,
+            true,
+        );
     }
-    for l in feed.get("leave").and_then(Value::as_array).unwrap_or(&empty) {
-        let (Some(id), Some(day)) = (l.get("request_id").and_then(Value::as_str), l.get("date").and_then(date)) else {
+    for l in feed
+        .get("leave")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+    {
+        let (Some(id), Some(day)) = (
+            l.get("request_id").and_then(Value::as_str),
+            l.get("date").and_then(date),
+        ) else {
             continue;
         };
         let slots: Vec<&str> = l
@@ -162,9 +198,18 @@ pub async fn feed(State(state): State<AppState>, Path(file): Path<String>) -> Re
     };
     let mut res = build_ics(&data, Utc::now()).into_response();
     let h = res.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/calendar; charset=utf-8"));
-    h.insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("inline; filename=\"hrms.ics\""));
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=900"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/calendar; charset=utf-8"),
+    );
+    h.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("inline; filename=\"hrms.ics\""),
+    );
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=900"),
+    );
     res
 }
 
@@ -225,7 +270,9 @@ mod tests {
                 {"request_id": "r2", "date": "2026-12-31", "slots": ["AM"], "type": null}
             ]
         });
-        let now = DateTime::parse_from_rfc3339("2026-11-14T06:00:00Z").unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-11-14T06:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let ics = build_ics(&feed, now);
         assert!(ics.starts_with("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"));
         assert!(ics.ends_with("END:VCALENDAR\r\n"));

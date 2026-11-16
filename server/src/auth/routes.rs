@@ -197,8 +197,14 @@ pub async fn login(
         "credential_hold": result["credential_hold"].as_bool().unwrap_or(false),
     });
     // Two-step sign-in: no session until the code is right.
-    if let Some(challenge) = super::two_step::challenge_if_enabled(&state, rid, user_id, &data).await? {
-        return Ok(ok(json!({ "two_step_required": true, "challenge": challenge }), rid).into_response());
+    if let Some(challenge) =
+        super::two_step::challenge_if_enabled(&state, rid, user_id, &data).await?
+    {
+        return Ok(ok(
+            json!({ "two_step_required": true, "challenge": challenge }),
+            rid,
+        )
+        .into_response());
     }
     let cookie = issue_session(&state, rid, user_id, &headers).await?;
     Ok(with_cookie(ok(data, rid), cookie))
@@ -798,7 +804,9 @@ mod tests {
     fn reauth_allowlist_matches_sql() {
         // The newest definition of the grants table's action check.
         let sql = include_str!("../../migrations/20261114180000_web_two_step.sql");
-        let start = sql.find("reauthentication_grants_action_check check (action in (").expect("constraint");
+        let start = sql
+            .find("reauthentication_grants_action_check check (action in (")
+            .expect("constraint");
         let list = &sql[start..start + sql[start..].find("))").unwrap()];
         let in_sql: Vec<&str> = list.split('\'').skip(1).step_by(2).collect();
         assert_eq!(in_sql, REAUTH_ACTIONS.to_vec());

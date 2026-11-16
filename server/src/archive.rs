@@ -37,7 +37,10 @@ pub async fn export_file(
     let grant = db::service_call(
         pool,
         "internal_authorize_export_file",
-        actor(&session, json!({ "p_job_id": job, "p_file_version_id": version })),
+        actor(
+            &session,
+            json!({ "p_job_id": job, "p_file_version_id": version }),
+        ),
     )
     .await
     .map_err(tag)?;
@@ -53,7 +56,13 @@ pub async fn export_file(
         .get(s("bucket"), s("object_key"))
         .await
         .map_err(|e| tag(storage_down(e)))?
-        .ok_or_else(|| tag(ApiError::new(StatusCode::GONE, "ARCHIVED", "This file is no longer stored.")))?;
+        .ok_or_else(|| {
+            tag(ApiError::new(
+                StatusCode::GONE,
+                "ARCHIVED",
+                "This file is no longer stored.",
+            ))
+        })?;
     let mut res = file_response(
         bytes,
         "application/octet-stream",

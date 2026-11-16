@@ -31,8 +31,8 @@ use uuid::Uuid;
 use super::{
     password,
     routes::{
-        Actor, client_ip, issue_session, rate_limit, resolve_actor, service,
-        stored_password, with_cookie,
+        Actor, client_ip, issue_session, rate_limit, resolve_actor, service, stored_password,
+        with_cookie,
     },
     session::Session,
     token,
@@ -80,7 +80,9 @@ pub fn hotp(secret: &[u8], counter: u64) -> u32 {
 
 /// Digits only, spaces and dashes ignored.
 pub fn clean_code(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace() && *c != '-').collect()
+    s.chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect()
 }
 
 /// The matching time step (previous, current or next 30 s), if any.
@@ -121,7 +123,8 @@ pub fn otpauth_uri(secret_b32: &str, account: &str) -> String {
 }
 
 pub fn qr_svg(data: &str) -> Option<String> {
-    let code = qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::M).ok()?;
+    let code =
+        qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::M).ok()?;
     Some(
         code.render::<qrcode::render::svg::Color>()
             .min_dimensions(200, 200)
@@ -135,7 +138,8 @@ pub fn qr_svg(data: &str) -> Option<String> {
 fn key(app_secret: &str) -> Key<Aes256Gcm> {
     let hk = Hkdf::<Sha256>::new(Some(b"hrms.two_step"), app_secret.as_bytes());
     let mut k = [0u8; 32];
-    hk.expand(b"totp secret v1", &mut k).expect("32 bytes is a valid length");
+    hk.expand(b"totp secret v1", &mut k)
+        .expect("32 bytes is a valid length");
     k.into()
 }
 
@@ -144,7 +148,13 @@ pub fn seal(app_secret: &str, user: Uuid, secret: &[u8]) -> Vec<u8> {
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
     let ct = Aes256Gcm::new(&key(app_secret))
-        .encrypt(Nonce::from_slice(&nonce), Payload { msg: secret, aad: user.as_bytes() })
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: secret,
+                aad: user.as_bytes(),
+            },
+        )
         .expect("encryption of a short secret cannot fail");
     [nonce.to_vec(), ct].concat()
 }
@@ -155,7 +165,13 @@ pub fn open(app_secret: &str, user: Uuid, sealed: &[u8]) -> Option<Vec<u8>> {
     }
     let (nonce, ct) = sealed.split_at(12);
     Aes256Gcm::new(&key(app_secret))
-        .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: user.as_bytes() })
+        .decrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: ct,
+                aad: user.as_bytes(),
+            },
+        )
         .ok()
 }
 
@@ -168,7 +184,10 @@ pub fn new_recovery_codes() -> (Vec<String>, Vec<Vec<u8>>) {
     while codes.len() < 10 {
         let mut raw = [0u8; 8];
         OsRng.fill_bytes(&mut raw);
-        let s: String = raw.iter().map(|b| ALPHABET[(b & 31) as usize] as char).collect();
+        let s: String = raw
+            .iter()
+            .map(|b| ALPHABET[(b & 31) as usize] as char)
+            .collect();
         let code = format!("{}-{}", &s[..4], &s[4..]);
         let h = recovery_hash(&code);
         if !hashes.contains(&h) {
@@ -200,7 +219,11 @@ fn unix_now() -> u64 {
 }
 
 fn bad_code() -> ApiError {
-    let mut e = ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "INVALID_CODE", "That code is not right. Try the newest code in your app.");
+    let mut e = ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "INVALID_CODE",
+        "That code is not right. Try the newest code in your app.",
+    );
     e.field_errors = json!({ "code": "Incorrect code" });
     e
 }
@@ -231,7 +254,14 @@ async fn factor(state: &AppState, rid: Uuid, user: Uuid) -> ApiResult<Option<Fac
 }
 
 /// Checks a TOTP (once per time step) or, when allowed, a recovery code.
-async fn check_code(state: &AppState, rid: Uuid, user: Uuid, f: &Factor, code: &str, allow_recovery: bool) -> ApiResult<bool> {
+async fn check_code(
+    state: &AppState,
+    rid: Uuid,
+    user: Uuid,
+    f: &Factor,
+    code: &str,
+    allow_recovery: bool,
+) -> ApiResult<bool> {
     let db = state.db()?;
     let mut tx = service(&db.pool, rid).await?;
     let ok = if let Some(step) = verify_totp(&f.secret, code, unix_now()) {
@@ -261,10 +291,18 @@ async fn check_code(state: &AppState, rid: Uuid, user: Uuid, f: &Factor, code: &
 }
 
 /// Password check for the signed-in person (rate limited like reauth).
-async fn confirm_password(state: &AppState, session: &Session, pw: Option<String>) -> ApiResult<Actor> {
+async fn confirm_password(
+    state: &AppState,
+    session: &Session,
+    pw: Option<String>,
+) -> ApiResult<Actor> {
     let pw = pw.unwrap_or_default();
     if pw.is_empty() || pw.chars().count() > 256 {
-        return Err(ApiError::validation_field("password", "Required", "Enter your password."));
+        return Err(ApiError::validation_field(
+            "password",
+            "Required",
+            "Enter your password.",
+        ));
     }
     let db = state.db()?;
     let mut tx = service(&db.pool, session.request_id).await?;
@@ -275,9 +313,15 @@ async fn confirm_password(state: &AppState, session: &Session, pw: Option<String
     }
     let stored = stored_password(&mut tx, &actor.auth_alias).await?;
     tx.commit().await?;
-    let phc = stored.filter(|(id, _)| *id == session.claims.sub).and_then(|(_, p)| p);
+    let phc = stored
+        .filter(|(id, _)| *id == session.claims.sub)
+        .and_then(|(_, p)| p);
     if !password::verify_async(pw, phc).await {
-        let mut e = ApiError::new(StatusCode::FORBIDDEN, "REAUTH_REQUIRED", "Password is incorrect.");
+        let mut e = ApiError::new(
+            StatusCode::FORBIDDEN,
+            "REAUTH_REQUIRED",
+            "Password is incorrect.",
+        );
         e.field_errors = json!({ "password": "Incorrect" });
         return Err(e);
     }
@@ -300,7 +344,12 @@ async fn event(state: &AppState, rid: Uuid, user: Uuid, what: &str) -> ApiResult
 
 /// Called by login after the password matched. When two-step is on, returns
 /// a challenge token (and no session is created yet).
-pub async fn challenge_if_enabled(state: &AppState, rid: Uuid, user: Uuid, result: &Value) -> ApiResult<Option<String>> {
+pub async fn challenge_if_enabled(
+    state: &AppState,
+    rid: Uuid,
+    user: Uuid,
+    result: &Value,
+) -> ApiResult<Option<String>> {
     match factor(state, rid, user).await? {
         Some(f) if f.enabled => {}
         _ => return Ok(None),
@@ -324,11 +373,19 @@ pub struct ChallengeBody {
     code: Option<String>,
 }
 
-pub async fn login_two_step(State(state): State<AppState>, headers: HeaderMap, JsonBody(body): JsonBody<ChallengeBody>) -> ApiResult<Response> {
+pub async fn login_two_step(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    JsonBody(body): JsonBody<ChallengeBody>,
+) -> ApiResult<Response> {
     let rid = request_id(&headers);
     let tag = |e: ApiError| e.with_request_id(Some(rid.to_string()));
     let expired = || {
-        tag(ApiError::new(StatusCode::UNAUTHORIZED, "CHALLENGE_EXPIRED", "This sign-in has expired. Enter your password again."))
+        tag(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "CHALLENGE_EXPIRED",
+            "This sign-in has expired. Enter your password again.",
+        ))
     };
     let db = state.db()?;
     let ip = token::ip_hash(&state.config.app_secret, client_ip(&headers));
@@ -361,7 +418,11 @@ pub async fn login_two_step(State(state): State<AppState>, headers: HeaderMap, J
     if !check_code(&state, rid, user, &f, &code, true).await? {
         let mut e = bad_code();
         if attempts >= 5 {
-            e = ApiError::new(StatusCode::UNAUTHORIZED, "CHALLENGE_EXPIRED", "Too many wrong codes. Enter your password again.");
+            e = ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "CHALLENGE_EXPIRED",
+                "Too many wrong codes. Enter your password again.",
+            );
         }
         return Err(tag(e));
     }
@@ -390,10 +451,16 @@ pub struct ManageBody {
     code: Option<String>,
 }
 
-pub async fn setup(State(state): State<AppState>, session: Session, JsonBody(body): JsonBody<ManageBody>) -> ApiResult<Response> {
+pub async fn setup(
+    State(state): State<AppState>,
+    session: Session,
+    JsonBody(body): JsonBody<ManageBody>,
+) -> ApiResult<Response> {
     let rid = session.request_id;
     let tag = |e: ApiError| e.with_request_id(Some(rid.to_string()));
-    let actor = confirm_password(&state, &session, body.password).await.map_err(tag)?;
+    let actor = confirm_password(&state, &session, body.password)
+        .await
+        .map_err(tag)?;
     let user = session.claims.sub;
     let mut raw = [0u8; 20];
     OsRng.fill_bytes(&mut raw);
@@ -406,20 +473,34 @@ pub async fn setup(State(state): State<AppState>, session: Session, JsonBody(bod
         .await?;
     tx.commit().await?;
     if !began {
-        return Err(tag(ApiError::new(StatusCode::CONFLICT, "ALREADY_ON", "Two-step sign-in is already on.")));
+        return Err(tag(ApiError::new(
+            StatusCode::CONFLICT,
+            "ALREADY_ON",
+            "Two-step sign-in is already on.",
+        )));
     }
     let secret = base32(&raw);
     let uri = otpauth_uri(&secret, &actor.employee_code);
-    Ok(ok(json!({ "secret": secret, "uri": uri, "qr_svg": qr_svg(&uri) }), rid).into_response())
+    Ok(ok(
+        json!({ "secret": secret, "uri": uri, "qr_svg": qr_svg(&uri) }),
+        rid,
+    )
+    .into_response())
 }
 
-pub async fn enable(State(state): State<AppState>, session: Session, JsonBody(body): JsonBody<ManageBody>) -> ApiResult<Response> {
+pub async fn enable(
+    State(state): State<AppState>,
+    session: Session,
+    JsonBody(body): JsonBody<ManageBody>,
+) -> ApiResult<Response> {
     let rid = session.request_id;
     let tag = |e: ApiError| e.with_request_id(Some(rid.to_string()));
     let user = session.claims.sub;
     let db = state.db().map_err(tag)?;
     let mut tx = service(&db.pool, rid).await?;
-    resolve_actor(&mut tx, &session.claims, "business").await.map_err(tag)?;
+    resolve_actor(&mut tx, &session.claims, "business")
+        .await
+        .map_err(tag)?;
     if !rate_limit(&mut tx, &format!("two-step-enable:{user}"), 900, 10).await? {
         tx.commit().await?;
         return Err(tag(ApiError::rate_limited()));
@@ -427,10 +508,25 @@ pub async fn enable(State(state): State<AppState>, session: Session, JsonBody(bo
     tx.commit().await?;
     let f = match factor(&state, rid, user).await.map_err(tag)? {
         Some(f) if !f.enabled => f,
-        Some(_) => return Err(tag(ApiError::new(StatusCode::CONFLICT, "ALREADY_ON", "Two-step sign-in is already on."))),
-        None => return Err(tag(ApiError::new(StatusCode::CONFLICT, "SETUP_REQUIRED", "Start the setup again."))),
+        Some(_) => {
+            return Err(tag(ApiError::new(
+                StatusCode::CONFLICT,
+                "ALREADY_ON",
+                "Two-step sign-in is already on.",
+            )));
+        }
+        None => {
+            return Err(tag(ApiError::new(
+                StatusCode::CONFLICT,
+                "SETUP_REQUIRED",
+                "Start the setup again.",
+            )));
+        }
     };
-    if !check_code(&state, rid, user, &f, &body.code.unwrap_or_default(), false).await.map_err(tag)? {
+    if !check_code(&state, rid, user, &f, &body.code.unwrap_or_default(), false)
+        .await
+        .map_err(tag)?
+    {
         return Err(tag(bad_code()));
     }
     let (codes, hashes) = new_recovery_codes();
@@ -442,7 +538,11 @@ pub async fn enable(State(state): State<AppState>, session: Session, JsonBody(bo
         .await?;
     tx.commit().await?;
     if !on {
-        return Err(tag(ApiError::new(StatusCode::CONFLICT, "ALREADY_ON", "Two-step sign-in is already on.")));
+        return Err(tag(ApiError::new(
+            StatusCode::CONFLICT,
+            "ALREADY_ON",
+            "Two-step sign-in is already on.",
+        )));
     }
     event(&state, rid, user, "enabled").await.map_err(tag)?;
     Ok(ok(json!({ "recovery_codes": codes }), rid).into_response())
@@ -454,27 +554,55 @@ async fn confirm_both(state: &AppState, session: &Session, body: ManageBody) -> 
     let user = session.claims.sub;
     let f = match factor(state, session.request_id, user).await? {
         Some(f) if f.enabled => f,
-        _ => return Err(ApiError::new(StatusCode::CONFLICT, "NOT_ON", "Two-step sign-in is not on.")),
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "NOT_ON",
+                "Two-step sign-in is not on.",
+            ));
+        }
     };
-    if !check_code(state, session.request_id, user, &f, &body.code.unwrap_or_default(), true).await? {
+    if !check_code(
+        state,
+        session.request_id,
+        user,
+        &f,
+        &body.code.unwrap_or_default(),
+        true,
+    )
+    .await?
+    {
         return Err(bad_code());
     }
     Ok(f)
 }
 
-pub async fn disable(State(state): State<AppState>, session: Session, JsonBody(body): JsonBody<ManageBody>) -> ApiResult<Response> {
+pub async fn disable(
+    State(state): State<AppState>,
+    session: Session,
+    JsonBody(body): JsonBody<ManageBody>,
+) -> ApiResult<Response> {
     let rid = session.request_id;
     let tag = |e: ApiError| e.with_request_id(Some(rid.to_string()));
     confirm_both(&state, &session, body).await.map_err(tag)?;
     let db = state.db().map_err(tag)?;
     let mut tx = service(&db.pool, rid).await?;
-    sqlx::query("select iam.totp_disable($1)").bind(session.claims.sub).execute(&mut *tx).await?;
+    sqlx::query("select iam.totp_disable($1)")
+        .bind(session.claims.sub)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
-    event(&state, rid, session.claims.sub, "disabled").await.map_err(tag)?;
+    event(&state, rid, session.claims.sub, "disabled")
+        .await
+        .map_err(tag)?;
     Ok(ok(json!({ "enabled": false }), rid).into_response())
 }
 
-pub async fn recovery(State(state): State<AppState>, session: Session, JsonBody(body): JsonBody<ManageBody>) -> ApiResult<Response> {
+pub async fn recovery(
+    State(state): State<AppState>,
+    session: Session,
+    JsonBody(body): JsonBody<ManageBody>,
+) -> ApiResult<Response> {
     let rid = session.request_id;
     let tag = |e: ApiError| e.with_request_id(Some(rid.to_string()));
     confirm_both(&state, &session, body).await.map_err(tag)?;
@@ -487,7 +615,9 @@ pub async fn recovery(State(state): State<AppState>, session: Session, JsonBody(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    event(&state, rid, session.claims.sub, "codes_replaced").await.map_err(tag)?;
+    event(&state, rid, session.claims.sub, "codes_replaced")
+        .await
+        .map_err(tag)?;
     Ok(ok(json!({ "recovery_codes": codes }), rid).into_response())
 }
 
@@ -500,14 +630,22 @@ mod tests {
 
     #[test]
     fn rfc6238_vectors() {
-        for (t, want) in [(59u64, 94287082u32), (1111111109, 7081804), (1111111111, 14050471), (1234567890, 89005924), (2000000000, 69279037)] {
+        for (t, want) in [
+            (59u64, 94287082u32),
+            (1111111109, 7081804),
+            (1111111111, 14050471),
+            (1234567890, 89005924),
+            (2000000000, 69279037),
+        ] {
             assert_eq!(hotp(RFC_KEY, t / STEP), want % 1_000_000, "t={t}");
         }
     }
 
     #[test]
     fn rfc4226_vectors() {
-        let want = [755224, 287082, 359152, 969429, 338314, 254676, 287922, 162583, 399871, 520489];
+        let want = [
+            755224, 287082, 359152, 969429, 338314, 254676, 287922, 162583, 399871, 520489,
+        ];
         for (i, w) in want.iter().enumerate() {
             assert_eq!(hotp(RFC_KEY, i as u64), *w);
         }
@@ -525,8 +663,14 @@ mod tests {
         assert_eq!(verify_totp(RFC_KEY, &code(now + 2), t), None);
         // Spaces and dashes are fine; anything else is not.
         let c = code(now);
-        assert_eq!(verify_totp(RFC_KEY, &format!("{} {}", &c[..3], &c[3..]), t), Some(now));
-        assert_eq!(verify_totp(RFC_KEY, &format!("{}-{}", &c[..3], &c[3..]), t), Some(now));
+        assert_eq!(
+            verify_totp(RFC_KEY, &format!("{} {}", &c[..3], &c[3..]), t),
+            Some(now)
+        );
+        assert_eq!(
+            verify_totp(RFC_KEY, &format!("{}-{}", &c[..3], &c[3..]), t),
+            Some(now)
+        );
         for bad in ["", "12345", "1234567", "abcdef", "12345a", "１２３４５６"] {
             assert_eq!(verify_totp(RFC_KEY, bad, t), None, "{bad}");
         }
@@ -536,7 +680,15 @@ mod tests {
 
     #[test]
     fn base32_matches_rfc4648() {
-        for (raw, want) in [("", ""), ("f", "MY"), ("fo", "MZXQ"), ("foo", "MZXW6"), ("foob", "MZXW6YQ"), ("fooba", "MZXW6YTB"), ("foobar", "MZXW6YTBOI")] {
+        for (raw, want) in [
+            ("", ""),
+            ("f", "MY"),
+            ("fo", "MZXQ"),
+            ("foo", "MZXW6"),
+            ("foob", "MZXW6YQ"),
+            ("fooba", "MZXW6YTB"),
+            ("foobar", "MZXW6YTBOI"),
+        ] {
             assert_eq!(base32(raw.as_bytes()), want);
         }
         assert_eq!(base32(&[0u8; 20]).len(), 32);
@@ -547,7 +699,11 @@ mod tests {
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
         let s = seal("app-secret", a, b"0123456789abcdefghij");
         assert_eq!(s.len(), 12 + 20 + 16);
-        assert_ne!(s, seal("app-secret", a, b"0123456789abcdefghij"), "fresh nonce each time");
+        assert_ne!(
+            s,
+            seal("app-secret", a, b"0123456789abcdefghij"),
+            "fresh nonce each time"
+        );
         assert_eq!(open("app-secret", a, &s).unwrap(), b"0123456789abcdefghij");
         assert!(open("app-secret", b, &s).is_none(), "other account");
         assert!(open("other-secret", a, &s).is_none(), "other key");
@@ -572,7 +728,10 @@ mod tests {
             assert!(looks_like_recovery(c));
         }
         let c = &codes[0];
-        assert_eq!(recovery_hash(c), recovery_hash(&c.to_lowercase().replace('-', " ")));
+        assert_eq!(
+            recovery_hash(c),
+            recovery_hash(&c.to_lowercase().replace('-', " "))
+        );
         assert_ne!(recovery_hash(c), recovery_hash(&codes[1]));
         assert!(!looks_like_recovery("123456"));
     }
@@ -580,9 +739,16 @@ mod tests {
     #[test]
     fn otpauth_uri_and_qr() {
         let uri = otpauth_uri("MZXW6YTBOI", "EMP 001/x");
-        assert_eq!(uri, "otpauth://totp/HRMS:EMP%20001%2Fx?secret=MZXW6YTBOI&issuer=HRMS&algorithm=SHA1&digits=6&period=30");
+        assert_eq!(
+            uri,
+            "otpauth://totp/HRMS:EMP%20001%2Fx?secret=MZXW6YTBOI&issuer=HRMS&algorithm=SHA1&digits=6&period=30"
+        );
         let svg = qr_svg(&uri).unwrap();
-        assert!(svg.starts_with("<?xml") || svg.starts_with("<svg"), "{}", &svg[..40]);
+        assert!(
+            svg.starts_with("<?xml") || svg.starts_with("<svg"),
+            "{}",
+            &svg[..40]
+        );
         assert!(svg.contains("<svg") && svg.contains("</svg>"));
         assert!(!svg.contains("<script"));
     }

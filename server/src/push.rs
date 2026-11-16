@@ -65,7 +65,10 @@ pub struct Vapid {
 
 impl std::fmt::Debug for Vapid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Vapid").field("public_key", &self.public_key).field("subject", &self.subject).finish()
+        f.debug_struct("Vapid")
+            .field("public_key", &self.public_key)
+            .field("subject", &self.subject)
+            .finish()
     }
 }
 
@@ -79,8 +82,11 @@ impl Vapid {
         if !(subject.starts_with("mailto:") || subject.starts_with("https://")) {
             return Err("VAPID_SUBJECT must be a mailto: or https:// contact".into());
         }
-        let raw = B64.decode(private.trim().trim_end_matches('=')).map_err(|_| "VAPID_PRIVATE_KEY is not base64url".to_string())?;
-        let secret = SecretKey::from_slice(&raw).map_err(|_| "VAPID_PRIVATE_KEY is not a P-256 key".to_string())?;
+        let raw = B64
+            .decode(private.trim().trim_end_matches('='))
+            .map_err(|_| "VAPID_PRIVATE_KEY is not base64url".to_string())?;
+        let secret = SecretKey::from_slice(&raw)
+            .map_err(|_| "VAPID_PRIVATE_KEY is not a P-256 key".to_string())?;
         let vapid = Self::from_secret(secret, subject);
         if let Some(public) = get("VAPID_PUBLIC_KEY").filter(|s| !s.trim().is_empty())
             && public.trim().trim_end_matches('=') != vapid.public_key
@@ -92,17 +98,27 @@ impl Vapid {
 
     pub fn from_secret(secret: SecretKey, subject: String) -> Self {
         let public_key = B64.encode(secret.public_key().to_encoded_point(false).as_bytes());
-        Self { key: SigningKey::from(secret), public_key, subject }
+        Self {
+            key: SigningKey::from(secret),
+            public_key,
+            subject,
+        }
     }
 
     /// `Authorization` header value for one endpoint (ES256 JWT, 12 h).
     pub fn authorization(&self, endpoint: &str, now_unix: i64) -> Result<String, PushError> {
         let aud = origin(endpoint).ok_or(PushError::BadSubscription("endpoint"))?;
         let header = B64.encode(br#"{"typ":"JWT","alg":"ES256"}"#);
-        let claims = B64.encode(json!({ "aud": aud, "exp": now_unix + 12 * 3600, "sub": self.subject }).to_string());
+        let claims = B64.encode(
+            json!({ "aud": aud, "exp": now_unix + 12 * 3600, "sub": self.subject }).to_string(),
+        );
         let input = format!("{header}.{claims}");
         let sig: Signature = self.key.sign(input.as_bytes());
-        Ok(format!("vapid t={input}.{}, k={}", B64.encode(sig.to_bytes()), self.public_key))
+        Ok(format!(
+            "vapid t={input}.{}, k={}",
+            B64.encode(sig.to_bytes()),
+            self.public_key
+        ))
     }
 }
 
@@ -124,7 +140,9 @@ pub fn endpoint_allowed(url: &str) -> bool {
         return false;
     }
     let host = host.to_ascii_lowercase();
-    PUSH_HOSTS.iter().any(|h| host == *h || host.ends_with(&format!(".{h}")))
+    PUSH_HOSTS
+        .iter()
+        .any(|h| host == *h || host.ends_with(&format!(".{h}")))
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,7 +157,8 @@ pub struct SubKeys {
 }
 
 fn b64(s: &str) -> Result<Vec<u8>, PushError> {
-    B64.decode(s.trim_end_matches('=')).map_err(|_| PushError::BadSubscription("keys"))
+    B64.decode(s.trim_end_matches('='))
+        .map_err(|_| PushError::BadSubscription("keys"))
 }
 
 /// RFC 8291 encryption with a caller-chosen sender key and salt (tests use
@@ -158,7 +177,8 @@ pub fn encrypt_with(
     if auth_secret.len() != 16 {
         return Err(PushError::BadSubscription("auth"));
     }
-    let ua = PublicKey::from_sec1_bytes(ua_public).map_err(|_| PushError::BadSubscription("p256dh"))?;
+    let ua =
+        PublicKey::from_sec1_bytes(ua_public).map_err(|_| PushError::BadSubscription("p256dh"))?;
     let ua_bytes = ua.to_encoded_point(false);
     let as_public = as_secret.public_key().to_encoded_point(false);
     let shared = p256::ecdh::diffie_hellman(as_secret.to_nonzero_scalar(), ua.as_affine());
@@ -174,13 +194,17 @@ pub fn encrypt_with(
     let prk = Hkdf::<Sha256>::new(Some(salt), &ikm);
     let mut cek = [0u8; 16];
     let mut nonce = [0u8; 12];
-    prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek).map_err(|_| PushError::Crypto)?;
-    prk.expand(b"Content-Encoding: nonce\0", &mut nonce).map_err(|_| PushError::Crypto)?;
+    prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek)
+        .map_err(|_| PushError::Crypto)?;
+    prk.expand(b"Content-Encoding: nonce\0", &mut nonce)
+        .map_err(|_| PushError::Crypto)?;
 
     let mut record = plaintext.to_vec();
     record.push(2); // last-record delimiter, no padding
     let cipher = Aes128Gcm::new_from_slice(&cek).map_err(|_| PushError::Crypto)?;
-    let sealed = cipher.encrypt((&nonce).into(), record.as_slice()).map_err(|_| PushError::Crypto)?;
+    let sealed = cipher
+        .encrypt((&nonce).into(), record.as_slice())
+        .map_err(|_| PushError::Crypto)?;
 
     let mut out = Vec::with_capacity(16 + 4 + 1 + 65 + sealed.len());
     out.extend_from_slice(salt);
@@ -196,7 +220,13 @@ pub fn encrypt(plaintext: &[u8], sub: &Subscription) -> Result<Vec<u8>, PushErro
     let mut salt = [0u8; 16];
     OsRng.fill_bytes(&mut salt);
     let ephemeral = SecretKey::random(&mut OsRng);
-    encrypt_with(plaintext, &b64(&sub.keys.p256dh)?, &b64(&sub.keys.auth)?, &ephemeral, &salt)
+    encrypt_with(
+        plaintext,
+        &b64(&sub.keys.p256dh)?,
+        &b64(&sub.keys.auth)?,
+        &ephemeral,
+        &salt,
+    )
 }
 
 /// What one delivery attempt means for the outbox.
@@ -238,7 +268,9 @@ pub async fn send(http: &reqwest::Client, vapid: &Vapid, token: &str, payload: &
     }
     let body = match encrypt(payload, &sub) {
         Ok(b) => b,
-        Err(PushError::BadSubscription(_)) => return Delivery::Gone("bad subscription keys".into()),
+        Err(PushError::BadSubscription(_)) => {
+            return Delivery::Gone("bad subscription keys".into());
+        }
         Err(e) => return Delivery::Failed(e.to_string()),
     };
     let auth = match vapid.authorization(&sub.endpoint, chrono::Utc::now().timestamp()) {
@@ -257,7 +289,9 @@ pub async fn send(http: &reqwest::Client, vapid: &Vapid, token: &str, payload: &
         .await
     {
         Ok(r) => classify(r.status().as_u16()),
-        Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => Delivery::Retry("network".into()),
+        Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
+            Delivery::Retry("network".into())
+        }
         Err(_) => Delivery::Retry("network".into()),
     }
 }
@@ -265,14 +299,22 @@ pub async fn send(http: &reqwest::Client, vapid: &Vapid, token: &str, payload: &
 /// In-app paths only; anything else opens the inbox.
 pub fn safe_path(link: Option<&str>) -> String {
     match link {
-        Some(p) if p.starts_with('/') && !p.starts_with("//") && !p.contains('\\') && p.len() <= 200 => p.to_owned(),
+        Some(p)
+            if p.starts_with('/')
+                && !p.starts_with("//")
+                && !p.contains('\\')
+                && p.len() <= 200 =>
+        {
+            p.to_owned()
+        }
         _ => "/notifications".into(),
     }
 }
 
 pub fn payload(job: &Value) -> Vec<u8> {
     let s = |k: &str| job.get(k).and_then(Value::as_str);
-    let clip = |v: Option<&str>, n: usize| v.unwrap_or_default().chars().take(n).collect::<String>();
+    let clip =
+        |v: Option<&str>, n: usize| v.unwrap_or_default().chars().take(n).collect::<String>();
     json!({
         "title": clip(s("title"), 120),
         "body": clip(s("body"), 300),
@@ -286,9 +328,19 @@ pub fn payload(job: &Value) -> Vec<u8> {
 
 /// Combines per-subscription results into one outbox outcome.
 pub fn outcome(results: &[(String, Delivery)]) -> Value {
-    let invalid: Vec<&String> = results.iter().filter(|(_, d)| matches!(d, Delivery::Gone(_))).map(|(t, _)| t).collect();
+    let invalid: Vec<&String> = results
+        .iter()
+        .filter(|(_, d)| matches!(d, Delivery::Gone(_)))
+        .map(|(t, _)| t)
+        .collect();
     let sent = results.iter().any(|(_, d)| *d == Delivery::Sent);
-    let retry = results.iter().find_map(|(_, d)| if let Delivery::Retry(e) = d { Some(e.clone()) } else { None });
+    let retry = results.iter().find_map(|(_, d)| {
+        if let Delivery::Retry(e) = d {
+            Some(e.clone())
+        } else {
+            None
+        }
+    });
     let failed = results.iter().find_map(|(_, d)| match d {
         Delivery::Failed(e) | Delivery::Gone(e) => Some(e.clone()),
         _ => None,
@@ -307,14 +359,26 @@ pub fn outcome(results: &[(String, Delivery)]) -> Value {
 
 async fn service(pool: &PgPool, sql: &str, arg: Value) -> ApiResult<Value> {
     let mut tx = db::begin_as(pool, db::Caller::Service, Uuid::new_v4()).await?;
-    let v: Option<Value> = sqlx::query_scalar(sql).bind(arg).fetch_one(&mut *tx).await?;
+    let v: Option<Value> = sqlx::query_scalar(sql)
+        .bind(arg)
+        .fetch_one(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(v.unwrap_or(Value::Null))
 }
 
 /// One outbox pass. Returns how many jobs were completed.
-pub async fn run_outbox(pool: &PgPool, vapid: Option<&Vapid>, http: &reqwest::Client) -> ApiResult<usize> {
-    let jobs = service(pool, "select public.internal_claim_outbox(($1::jsonb ->> 'limit')::int, 60)", json!({ "limit": 50 })).await?;
+pub async fn run_outbox(
+    pool: &PgPool,
+    vapid: Option<&Vapid>,
+    http: &reqwest::Client,
+) -> ApiResult<usize> {
+    let jobs = service(
+        pool,
+        "select public.internal_claim_outbox(($1::jsonb ->> 'limit')::int, 60)",
+        json!({ "limit": 50 }),
+    )
+    .await?;
     let jobs = jobs.as_array().cloned().unwrap_or_default();
     if jobs.is_empty() {
         return Ok(0);
@@ -349,7 +413,12 @@ pub async fn run_outbox(pool: &PgPool, vapid: Option<&Vapid>, http: &reqwest::Cl
         results.push(r);
     }
     let n = results.len();
-    service(pool, "select public.internal_complete_outbox($1)", Value::Array(results)).await?;
+    service(
+        pool,
+        "select public.internal_complete_outbox($1)",
+        Value::Array(results),
+    )
+    .await?;
     Ok(n)
 }
 
@@ -363,7 +432,9 @@ pub fn spawn(pool: PgPool, vapid: Option<Vapid>) {
             every.tick().await;
             let due = async {
                 let mut tx = db::begin_as(&pool, db::Caller::Service, Uuid::new_v4()).await?;
-                let due: bool = sqlx::query_scalar("select public.internal_outbox_has_due()").fetch_one(&mut *tx).await?;
+                let due: bool = sqlx::query_scalar("select public.internal_outbox_has_due()")
+                    .fetch_one(&mut *tx)
+                    .await?;
                 tx.commit().await?;
                 ApiResult::Ok(due)
             }
@@ -394,38 +465,60 @@ mod tests {
         let idlen = body[20] as usize;
         let as_public = PublicKey::from_sec1_bytes(&body[21..21 + idlen]).unwrap();
         let ct = &body[21 + idlen..];
-        let shared = p256::ecdh::diffie_hellman(ua_secret.to_nonzero_scalar(), as_public.as_affine());
+        let shared =
+            p256::ecdh::diffie_hellman(ua_secret.to_nonzero_scalar(), as_public.as_affine());
         let mut info = b"WebPush: info\0".to_vec();
         info.extend_from_slice(ua_secret.public_key().to_encoded_point(false).as_bytes());
         info.extend_from_slice(as_public.to_encoded_point(false).as_bytes());
         let mut ikm = [0u8; 32];
-        Hkdf::<Sha256>::new(Some(auth), shared.raw_secret_bytes().as_slice()).expand(&info, &mut ikm).unwrap();
+        Hkdf::<Sha256>::new(Some(auth), shared.raw_secret_bytes().as_slice())
+            .expand(&info, &mut ikm)
+            .unwrap();
         let prk = Hkdf::<Sha256>::new(Some(salt), &ikm);
         let (mut cek, mut nonce) = ([0u8; 16], [0u8; 12]);
-        prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek).unwrap();
-        prk.expand(b"Content-Encoding: nonce\0", &mut nonce).unwrap();
-        let mut pt = Aes128Gcm::new_from_slice(&cek).unwrap().decrypt((&nonce).into(), ct).unwrap();
+        prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek)
+            .unwrap();
+        prk.expand(b"Content-Encoding: nonce\0", &mut nonce)
+            .unwrap();
+        let mut pt = Aes128Gcm::new_from_slice(&cek)
+            .unwrap()
+            .decrypt((&nonce).into(), ct)
+            .unwrap();
         assert_eq!(pt.pop(), Some(2));
         pt
     }
 
     #[test]
     fn rfc8291_appendix_a_vector() {
-        let as_secret = SecretKey::from_slice(&D("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw")).unwrap();
+        let as_secret =
+            SecretKey::from_slice(&D("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw")).unwrap();
         assert_eq!(
             B64.encode(as_secret.public_key().to_encoded_point(false).as_bytes()),
             "BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8"
         );
-        let ua_public = D("BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4");
+        let ua_public = D(
+            "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+        );
         let auth = D("BTBZMqHH6r4Tts7J_aSIgg");
         let salt: [u8; 16] = D("DGv6ra1nlYgDCS1FRnbzlw").try_into().unwrap();
-        let body = encrypt_with(b"When I grow up, I want to be a watermelon", &ua_public, &auth, &as_secret, &salt).unwrap();
+        let body = encrypt_with(
+            b"When I grow up, I want to be a watermelon",
+            &ua_public,
+            &auth,
+            &as_secret,
+            &salt,
+        )
+        .unwrap();
         assert_eq!(
             B64.encode(&body),
             "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
         );
-        let ua_secret = SecretKey::from_slice(&D("q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94")).unwrap();
-        assert_eq!(decrypt(&body, &ua_secret, &auth), b"When I grow up, I want to be a watermelon");
+        let ua_secret =
+            SecretKey::from_slice(&D("q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94")).unwrap();
+        assert_eq!(
+            decrypt(&body, &ua_secret, &auth),
+            b"When I grow up, I want to be a watermelon"
+        );
     }
 
     #[test]
@@ -434,17 +527,38 @@ mod tests {
         let ua = SecretKey::random(&mut OsRng);
         let sub = Subscription {
             endpoint: "https://fcm.googleapis.com/fcm/send/x".into(),
-            keys: SubKeys { p256dh: B64.encode(ua.public_key().to_encoded_point(false).as_bytes()), auth: B64.encode([7u8; 16]) },
+            keys: SubKeys {
+                p256dh: B64.encode(ua.public_key().to_encoded_point(false).as_bytes()),
+                auth: B64.encode([7u8; 16]),
+            },
         };
         let a = encrypt(b"{\"title\":\"Hi\"}", &sub).unwrap();
         let b = encrypt(b"{\"title\":\"Hi\"}", &sub).unwrap();
         assert_ne!(a, b);
         assert_eq!(decrypt(&a, &ua, &[7u8; 16]), b"{\"title\":\"Hi\"}");
         assert_eq!(encrypt(&vec![b'x'; 3994], &sub), Err(PushError::TooLarge));
-        let bad = Subscription { endpoint: sub.endpoint.clone(), keys: SubKeys { p256dh: "AAAA".into(), auth: sub.keys.auth.clone() } };
-        assert_eq!(encrypt(b"x", &bad), Err(PushError::BadSubscription("p256dh")));
-        let short = Subscription { endpoint: sub.endpoint.clone(), keys: SubKeys { p256dh: sub.keys.p256dh.clone(), auth: "AAAA".into() } };
-        assert_eq!(encrypt(b"x", &short), Err(PushError::BadSubscription("auth")));
+        let bad = Subscription {
+            endpoint: sub.endpoint.clone(),
+            keys: SubKeys {
+                p256dh: "AAAA".into(),
+                auth: sub.keys.auth.clone(),
+            },
+        };
+        assert_eq!(
+            encrypt(b"x", &bad),
+            Err(PushError::BadSubscription("p256dh"))
+        );
+        let short = Subscription {
+            endpoint: sub.endpoint.clone(),
+            keys: SubKeys {
+                p256dh: sub.keys.p256dh.clone(),
+                auth: "AAAA".into(),
+            },
+        };
+        assert_eq!(
+            encrypt(b"x", &short),
+            Err(PushError::BadSubscription("auth"))
+        );
     }
 
     #[test]
@@ -452,38 +566,99 @@ mod tests {
         use p256::ecdsa::{VerifyingKey, signature::Verifier};
         let secret = SecretKey::from_slice(&[9u8; 32]).unwrap();
         let v = Vapid::from_secret(secret.clone(), "mailto:ops@example.com".into());
-        let h = v.authorization("https://fcm.googleapis.com/fcm/send/abc?x=1", 1_000).unwrap();
-        let t = h.strip_prefix("vapid t=").unwrap().split(", k=").next().unwrap();
+        let h = v
+            .authorization("https://fcm.googleapis.com/fcm/send/abc?x=1", 1_000)
+            .unwrap();
+        let t = h
+            .strip_prefix("vapid t=")
+            .unwrap()
+            .split(", k=")
+            .next()
+            .unwrap();
         let k = h.split(", k=").nth(1).unwrap();
         assert_eq!(k, v.public_key);
         let parts: Vec<&str> = t.split('.').collect();
         let claims: Value = serde_json::from_slice(&B64.decode(parts[1]).unwrap()).unwrap();
-        assert_eq!(claims, json!({ "aud": "https://fcm.googleapis.com", "exp": 1_000 + 43_200, "sub": "mailto:ops@example.com" }));
+        assert_eq!(
+            claims,
+            json!({ "aud": "https://fcm.googleapis.com", "exp": 1_000 + 43_200, "sub": "mailto:ops@example.com" })
+        );
         let sig = Signature::from_slice(&B64.decode(parts[2]).unwrap()).unwrap();
-        VerifyingKey::from(&SigningKey::from(secret)).verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig).unwrap();
+        VerifyingKey::from(&SigningKey::from(secret))
+            .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig)
+            .unwrap();
     }
 
     #[test]
     fn vapid_config() {
         let key = B64.encode([9u8; 32]);
-        let get = |pairs: Vec<(&'static str, String)>| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+        let get = |pairs: Vec<(&'static str, String)>| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone())
+        };
         assert!(Vapid::from_lookup(get(vec![])).unwrap().is_none());
         assert!(Vapid::from_lookup(get(vec![("VAPID_PRIVATE_KEY", key.clone())])).is_err()); // no subject
-        let ok = Vapid::from_lookup(get(vec![("VAPID_PRIVATE_KEY", key.clone()), ("VAPID_SUBJECT", "mailto:a@b.c".into())])).unwrap().unwrap();
+        let ok = Vapid::from_lookup(get(vec![
+            ("VAPID_PRIVATE_KEY", key.clone()),
+            ("VAPID_SUBJECT", "mailto:a@b.c".into()),
+        ]))
+        .unwrap()
+        .unwrap();
         assert_eq!(ok.public_key.len(), 87);
-        assert!(Vapid::from_lookup(get(vec![("VAPID_PRIVATE_KEY", "!!".into()), ("VAPID_SUBJECT", "mailto:a@b.c".into())])).is_err());
-        assert!(Vapid::from_lookup(get(vec![("VAPID_PRIVATE_KEY", B64.encode([0u8; 32])), ("VAPID_SUBJECT", "mailto:a@b.c".into())])).is_err());
-        assert!(Vapid::from_lookup(get(vec![("VAPID_PRIVATE_KEY", key.clone()), ("VAPID_SUBJECT", "mailto:a@b.c".into()), ("VAPID_PUBLIC_KEY", "wrong".into())])).is_err());
-        assert!(Vapid::from_lookup(get(vec![("VAPID_PRIVATE_KEY", key), ("VAPID_SUBJECT", "mailto:a@b.c".into()), ("VAPID_PUBLIC_KEY", ok.public_key.clone())])).is_ok());
+        assert!(
+            Vapid::from_lookup(get(vec![
+                ("VAPID_PRIVATE_KEY", "!!".into()),
+                ("VAPID_SUBJECT", "mailto:a@b.c".into())
+            ]))
+            .is_err()
+        );
+        assert!(
+            Vapid::from_lookup(get(vec![
+                ("VAPID_PRIVATE_KEY", B64.encode([0u8; 32])),
+                ("VAPID_SUBJECT", "mailto:a@b.c".into())
+            ]))
+            .is_err()
+        );
+        assert!(
+            Vapid::from_lookup(get(vec![
+                ("VAPID_PRIVATE_KEY", key.clone()),
+                ("VAPID_SUBJECT", "mailto:a@b.c".into()),
+                ("VAPID_PUBLIC_KEY", "wrong".into())
+            ]))
+            .is_err()
+        );
+        assert!(
+            Vapid::from_lookup(get(vec![
+                ("VAPID_PRIVATE_KEY", key),
+                ("VAPID_SUBJECT", "mailto:a@b.c".into()),
+                ("VAPID_PUBLIC_KEY", ok.public_key.clone())
+            ]))
+            .is_ok()
+        );
         assert!(!format!("{ok:?}").contains(&B64.encode([9u8; 32])));
     }
 
     #[test]
     fn only_known_push_services() {
-        for ok in ["https://fcm.googleapis.com/fcm/send/x", "https://updates.push.services.mozilla.com/wpush/v2/x", "https://web.push.apple.com/QG", "https://wns2-bl2p.notify.windows.com/w/?token=x"] {
+        for ok in [
+            "https://fcm.googleapis.com/fcm/send/x",
+            "https://updates.push.services.mozilla.com/wpush/v2/x",
+            "https://web.push.apple.com/QG",
+            "https://wns2-bl2p.notify.windows.com/w/?token=x",
+        ] {
             assert!(endpoint_allowed(ok), "{ok}");
         }
-        for bad in ["http://fcm.googleapis.com/x", "https://evil.com/fcm.googleapis.com", "https://fcm.googleapis.com.evil.com/x", "https://localhost/x", "https://127.0.0.1/x", "https://fcm.googleapis.com:8443/x", "https://user@fcm.googleapis.com/x", "https://notfcm.googleapis.com.evil/x", "fcm.googleapis.com/x", ""] {
+        for bad in [
+            "http://fcm.googleapis.com/x",
+            "https://evil.com/fcm.googleapis.com",
+            "https://fcm.googleapis.com.evil.com/x",
+            "https://localhost/x",
+            "https://127.0.0.1/x",
+            "https://fcm.googleapis.com:8443/x",
+            "https://user@fcm.googleapis.com/x",
+            "https://notfcm.googleapis.com.evil/x",
+            "fcm.googleapis.com/x",
+            "",
+        ] {
             assert!(!endpoint_allowed(bad), "{bad}");
         }
     }
@@ -501,13 +676,31 @@ mod tests {
 
     #[test]
     fn outcomes_and_payload() {
-        let sent = outcome(&[("a".into(), Delivery::Sent), ("b".into(), Delivery::Gone("HTTP 410".into()))]);
-        assert_eq!(sent, json!({ "outcome": "sent", "error": null, "invalid_tokens": ["b"] }));
-        assert_eq!(outcome(&[("a".into(), Delivery::Retry("HTTP 503".into()))])["outcome"], "retry");
-        assert_eq!(outcome(&[("a".into(), Delivery::Gone("HTTP 410".into()))])["outcome"], "failed");
-        assert_eq!(outcome(&[]), json!({ "outcome": "skipped", "error": "no devices", "invalid_tokens": null }));
+        let sent = outcome(&[
+            ("a".into(), Delivery::Sent),
+            ("b".into(), Delivery::Gone("HTTP 410".into())),
+        ]);
+        assert_eq!(
+            sent,
+            json!({ "outcome": "sent", "error": null, "invalid_tokens": ["b"] })
+        );
+        assert_eq!(
+            outcome(&[("a".into(), Delivery::Retry("HTTP 503".into()))])["outcome"],
+            "retry"
+        );
+        assert_eq!(
+            outcome(&[("a".into(), Delivery::Gone("HTTP 410".into()))])["outcome"],
+            "failed"
+        );
+        assert_eq!(
+            outcome(&[]),
+            json!({ "outcome": "skipped", "error": "no devices", "invalid_tokens": null })
+        );
         let p: Value = serde_json::from_slice(&payload(&json!({ "title": "T", "body": "B", "deep_link": "//evil.com", "event_id": "e", "kind": "payslip.published" }))).unwrap();
-        assert_eq!(p, json!({ "title": "T", "body": "B", "url": "/notifications", "tag": "e", "kind": "payslip.published" }));
+        assert_eq!(
+            p,
+            json!({ "title": "T", "body": "B", "url": "/notifications", "tag": "e", "kind": "payslip.published" })
+        );
         assert_eq!(safe_path(Some("/approvals/1")), "/approvals/1");
         assert_eq!(safe_path(Some("https://x")), "/notifications");
         assert_eq!(safe_path(Some("/\\evil")), "/notifications");

@@ -74,7 +74,9 @@ async fn main() {
         }
     };
     if vapid.is_none() {
-        tracing::warn!("web push is off (set VAPID_PRIVATE_KEY and VAPID_SUBJECT); the inbox still works");
+        tracing::warn!(
+            "web push is off (set VAPID_PRIVATE_KEY and VAPID_SUBJECT); the inbox still works"
+        );
     }
     let vapid_public_key = vapid.as_ref().map(|v| v.public_key.clone());
     hrms_server::push::spawn(pool.clone(), vapid);
@@ -86,9 +88,11 @@ async fn main() {
         }
     };
     if store.is_none() {
-        tracing::warn!("file storage is off (set R2_* or FILE_STORE_DIR)");
+        tracing::warn!("file storage is off (set S3_*, R2_* or FILE_STORE_DIR)");
     }
-    let state = AppState::new(config, Some(Db { pool, catalog })).with_store(store).with_vapid_public_key(vapid_public_key);
+    let state = AppState::new(config, Some(Db { pool, catalog }))
+        .with_store(store)
+        .with_vapid_public_key(vapid_public_key);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

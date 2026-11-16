@@ -2702,18 +2702,35 @@ async fn archive_routes_are_admin_only_and_never_leak_files() {
     let path = format!("/v1/archive/{job}/files/{ver}");
 
     // no session
-    let r = t.send(t.base(Method::GET, &path).body(Body::empty()).unwrap()).await;
+    let r = t
+        .send(t.base(Method::GET, &path).body(Body::empty()).unwrap())
+        .await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     // an employee cannot read export files or drive a cleanup
     let (st, h, _) = t.fetch(&emp, &path).await;
-    assert!(st == StatusCode::FORBIDDEN || st == StatusCode::NOT_FOUND, "{st}");
+    assert!(
+        st == StatusCode::FORBIDDEN || st == StatusCode::NOT_FOUND,
+        "{st}"
+    );
     assert!(h.get("x-sha256").is_none());
-    let r = t.post(&format!("/v1/archive/cleanup/{job}"), json!({}), Some(&emp)).await;
-    assert!(r.status == StatusCode::FORBIDDEN || r.status == StatusCode::NOT_FOUND, "{}", r.body);
+    let r = t
+        .post(&format!("/v1/archive/cleanup/{job}"), json!({}), Some(&emp))
+        .await;
+    assert!(
+        r.status == StatusCode::FORBIDDEN || r.status == StatusCode::NOT_FOUND,
+        "{}",
+        r.body
+    );
     // an Admin gets a clean error for an unknown job, never bytes
     let (st, _, _) = t.fetch(&admin, &path).await;
     assert!(st.is_client_error(), "{st}");
-    let r = t.post(&format!("/v1/archive/cleanup/{job}?reconcile_only=true"), json!({}), Some(&admin)).await;
+    let r = t
+        .post(
+            &format!("/v1/archive/cleanup/{job}?reconcile_only=true"),
+            json!({}),
+            Some(&admin),
+        )
+        .await;
     assert!(r.status.is_client_error(), "{}", r.body);
     // malformed ids are rejected by the router
     let (st, _, _) = t.fetch(&admin, "/v1/archive/not-a-uuid/files/x").await;
@@ -2737,24 +2754,45 @@ async fn notification_prefs_quiet_hours_and_push_outbox() {
     // push config is visible to signed-in users only; off in tests
     let (st, _, body) = t.fetch(&emp, "/v1/push/config").await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["data"]["public_key"], Value::Null);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["data"]["public_key"],
+        Value::Null
+    );
 
     // defaults, validation, round trip
     let r = t.rpc("get_notification_prefs", json!({}), &emp).await;
     assert_eq!(r.body["data"]["muted"], json!([]), "{}", r.body);
     for (args, field) in [
-        (json!({ "p_muted": ["salary"], "p_quiet_start": null, "p_quiet_end": null }), "muted"),
-        (json!({ "p_muted": [], "p_quiet_start": "22:00", "p_quiet_end": null }), "quiet_end"),
-        (json!({ "p_muted": [], "p_quiet_start": "22:00", "p_quiet_end": "22:00" }), "quiet_end"),
+        (
+            json!({ "p_muted": ["salary"], "p_quiet_start": null, "p_quiet_end": null }),
+            "muted",
+        ),
+        (
+            json!({ "p_muted": [], "p_quiet_start": "22:00", "p_quiet_end": null }),
+            "quiet_end",
+        ),
+        (
+            json!({ "p_muted": [], "p_quiet_start": "22:00", "p_quiet_end": "22:00" }),
+            "quiet_end",
+        ),
     ] {
         let r = t.rpc("set_notification_prefs", args, &emp).await;
         assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
-        assert!(r.body["error"]["field_errors"][field].is_string(), "{}", r.body);
+        assert!(
+            r.body["error"]["field_errors"][field].is_string(),
+            "{}",
+            r.body
+        );
     }
     let r = t
         .rpc("set_notification_prefs", json!({ "p_muted": ["pay", "pay", "announcements"], "p_quiet_start": null, "p_quiet_end": null }), &emp)
         .await;
-    assert_eq!(r.body["data"]["muted"], json!(["announcements", "pay"]), "{}", r.body);
+    assert_eq!(
+        r.body["data"]["muted"],
+        json!(["announcements", "pay"]),
+        "{}",
+        r.body
+    );
 
     let suppressed = |kind: &'static str, at: &'static str| {
         let t = &t;
@@ -2773,21 +2811,31 @@ async fn notification_prefs_quiet_hours_and_push_outbox() {
     assert!(!suppressed("credentials.reset", "2026-11-14T06:00:00Z").await); // account notices are never muted
 
     // quiet hours 22:00–07:00 IST wrap midnight
-    t.rpc("set_notification_prefs", json!({ "p_muted": [], "p_quiet_start": "22:00", "p_quiet_end": "07:00" }), &emp)
-        .await;
+    t.rpc(
+        "set_notification_prefs",
+        json!({ "p_muted": [], "p_quiet_start": "22:00", "p_quiet_end": "07:00" }),
+        &emp,
+    )
+    .await;
     assert!(suppressed("request.submitted", "2026-11-14T17:00:00Z").await); // 22:30 IST
     assert!(suppressed("request.submitted", "2026-11-14T01:00:00Z").await); // 06:30 IST
     assert!(!suppressed("request.submitted", "2026-11-14T01:30:00Z").await); // 07:00 IST: over
     assert!(!suppressed("request.submitted", "2026-11-14T06:00:00Z").await); // 11:30 IST
     assert!(!suppressed("access.role_changed", "2026-11-14T17:00:00Z").await);
-    t.rpc("set_notification_prefs", json!({ "p_muted": [], "p_quiet_start": null, "p_quiet_end": null }), &emp)
-        .await;
+    t.rpc(
+        "set_notification_prefs",
+        json!({ "p_muted": [], "p_quiet_start": null, "p_quiet_end": null }),
+        &emp,
+    )
+    .await;
 
     // test push lands in the inbox; with push off the outbox job is skipped
     let r = t.rpc("send_test_notification", json!({}), &emp).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let http = hrms_server::push::client();
-    let n = hrms_server::push::run_outbox(&t.pool, None, &http).await.unwrap();
+    let n = hrms_server::push::run_outbox(&t.pool, None, &http)
+        .await
+        .unwrap();
     assert!(n >= 1);
     let (status, err): (String, Option<String>) = sqlx::query_as(
         "select o.status, o.last_error from hrms.outbox o join hrms.notifications n on n.id = o.notification_id
@@ -2797,9 +2845,16 @@ async fn notification_prefs_quiet_hours_and_push_outbox() {
     .fetch_one(&t.pool)
     .await
     .unwrap();
-    assert_eq!((status.as_str(), err.as_deref()), ("skipped", Some("push not configured")));
+    assert_eq!(
+        (status.as_str(), err.as_deref()),
+        ("skipped", Some("push not configured"))
+    );
     let r = t.rpc("list_notifications", json!({}), &emp).await;
-    assert_eq!(r.body["data"]["rows"][0]["kind"], "account.test", "{}", r.body);
+    assert_eq!(
+        r.body["data"]["rows"][0]["kind"], "account.test",
+        "{}",
+        r.body
+    );
     assert_eq!(r.body["data"]["unread"], 1);
 
     // a subscription on a host that is not a push service is never called and is revoked
@@ -2813,12 +2868,16 @@ async fn notification_prefs_quiet_hours_and_push_outbox() {
         p256::SecretKey::from_slice(&[9u8; 32]).unwrap(),
         "mailto:ops@example.com".into(),
     );
-    hrms_server::push::run_outbox(&t.pool, Some(&vapid), &http).await.unwrap();
-    let live: i64 = sqlx::query_scalar("select count(*) from hrms.push_tokens where employee_id = $1 and revoked_at is null")
-        .bind(asha)
-        .fetch_one(&t.pool)
+    hrms_server::push::run_outbox(&t.pool, Some(&vapid), &http)
         .await
         .unwrap();
+    let live: i64 = sqlx::query_scalar(
+        "select count(*) from hrms.push_tokens where employee_id = $1 and revoked_at is null",
+    )
+    .bind(asha)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
     assert_eq!(live, 0);
     let status: String = sqlx::query_scalar(
         "select o.status from hrms.outbox o join hrms.notifications n on n.id = o.notification_id
@@ -2836,8 +2895,14 @@ async fn notification_prefs_quiet_hours_and_push_outbox() {
     assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "{}", r.body);
 
     // read state
-    let r = t.rpc("mark_notifications_read", json!({ "p_ids": null }), &emp).await;
-    assert!(r.body["data"]["marked"].as_i64().unwrap() >= 3, "{}", r.body);
+    let r = t
+        .rpc("mark_notifications_read", json!({ "p_ids": null }), &emp)
+        .await;
+    assert!(
+        r.body["data"]["marked"].as_i64().unwrap() >= 3,
+        "{}",
+        r.body
+    );
     let r = t.rpc("list_notifications", json!({}), &emp).await;
     assert_eq!(r.body["data"]["unread"], 0);
 }
@@ -2852,10 +2917,11 @@ async fn calendar_feed_is_private_revocable_and_valid_ics() {
     let (asha, emp) = t.employee(&admin, "C001").await;
     let (other, _) = t.employee(&admin, "C002").await;
     let (org, _, _, office) = t.org_ids().await;
-    let today: chrono::NaiveDate = sqlx::query_scalar("select (now() at time zone 'Asia/Kolkata')::date")
-        .fetch_one(&t.pool)
-        .await
-        .unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Kolkata')::date")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
     let d = |n: i64| today + chrono::Duration::days(n);
     let other_office: Uuid = sqlx::query_scalar(
         "insert into hrms.offices (org_id, name, timezone, location)
@@ -2888,7 +2954,11 @@ async fn calendar_feed_is_private_revocable_and_valid_ics() {
         .await
         .unwrap();
     // Approved leave for Asha (one half day) and for someone else.
-    for (who, slot, state) in [(asha, "AM", "approved"), (asha, "FULL", "released"), (other, "FULL", "approved")] {
+    for (who, slot, state) in [
+        (asha, "AM", "approved"),
+        (asha, "FULL", "released"),
+        (other, "FULL", "approved"),
+    ] {
         let day = if state == "released" { d(21) } else { d(20) };
         sqlx::query(
             "with r as (
@@ -2913,15 +2983,19 @@ async fn calendar_feed_is_private_revocable_and_valid_ics() {
     let r = t.rpc("create_calendar_feed", json!({}), &emp).await;
     let token = r.body["data"]["token"].as_str().unwrap().to_owned();
     assert_eq!(token.len(), 43, "{}", r.body);
-    let stored: Vec<u8> = sqlx::query_scalar("select token_hash from hrms.calendar_feeds where employee_id = $1")
-        .bind(asha)
-        .fetch_one(&t.pool)
-        .await
-        .unwrap();
+    let stored: Vec<u8> =
+        sqlx::query_scalar("select token_hash from hrms.calendar_feeds where employee_id = $1")
+            .bind(asha)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
     assert_ne!(stored, token.as_bytes(), "only the hash is stored");
     let r = t.rpc("get_calendar_feed", json!({}), &emp).await;
     assert_eq!(r.body["data"]["enabled"], json!(true));
-    assert!(r.body["data"].get("token").is_none(), "token is shown only once");
+    assert!(
+        r.body["data"].get("token").is_none(),
+        "token is shown only once"
+    );
 
     // No cookie needed; still only through the proxy.
     let get = |path: String| {
@@ -2944,13 +3018,17 @@ async fn calendar_feed_is_private_revocable_and_valid_ics() {
     assert!(!ics.contains("Branch day"), "another office's holiday");
     assert!(!ics.contains("Draft day") && !ics.contains("Too far"));
     assert_eq!(ics.matches("SUMMARY:On leave:").count(), 1, "{ics}");
-    assert!(ics.contains("SUMMARY:On leave: Casual leave (morning)"), "{ics}");
+    assert!(
+        ics.contains("SUMMARY:On leave: Casual leave (morning)"),
+        "{ics}"
+    );
     assert!(ics.contains(&format!("DTSTART;VALUE=DATE:{}", d(20).format("%Y%m%d"))));
-    let used: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("select last_used_at from hrms.calendar_feeds where employee_id = $1")
-        .bind(asha)
-        .fetch_one(&t.pool)
-        .await
-        .unwrap();
+    let used: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("select last_used_at from hrms.calendar_feeds where employee_id = $1")
+            .bind(asha)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
     assert!(used.is_some());
 
     // Wrong shapes and unknown tokens look the same.
@@ -2969,20 +3047,43 @@ async fn calendar_feed_is_private_revocable_and_valid_ics() {
         .uri(format!("/v1/calendar/{token}.ics"))
         .body(Body::empty())
         .unwrap();
-    assert_eq!(t.app.clone().oneshot(req).await.unwrap().status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        t.app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
 
     // A new link replaces the old one.
     let r = t.rpc("create_calendar_feed", json!({}), &emp).await;
     let token2 = r.body["data"]["token"].as_str().unwrap().to_owned();
     assert_ne!(token, token2);
-    assert_eq!(get(format!("/v1/calendar/{token}.ics")).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(get(format!("/v1/calendar/{token2}.ics")).await.0, StatusCode::OK);
+    assert_eq!(
+        get(format!("/v1/calendar/{token}.ics")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(format!("/v1/calendar/{token2}.ics")).await.0,
+        StatusCode::OK
+    );
 
     // Deactivation stops it; reactivation brings it back.
-    sqlx::query("update hrms.employees set status = 'inactive' where id = $1").bind(asha).execute(&t.pool).await.unwrap();
-    assert_eq!(get(format!("/v1/calendar/{token2}.ics")).await.0, StatusCode::NOT_FOUND);
-    sqlx::query("update hrms.employees set status = 'active' where id = $1").bind(asha).execute(&t.pool).await.unwrap();
-    assert_eq!(get(format!("/v1/calendar/{token2}.ics")).await.0, StatusCode::OK);
+    sqlx::query("update hrms.employees set status = 'inactive' where id = $1")
+        .bind(asha)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        get(format!("/v1/calendar/{token2}.ics")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("update hrms.employees set status = 'active' where id = $1")
+        .bind(asha)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        get(format!("/v1/calendar/{token2}.ics")).await.0,
+        StatusCode::OK
+    );
 
     // Deactivation signed Asha out; sign in again.
     let r = t.login("C001", NEW_PW).await;
@@ -2993,7 +3094,10 @@ async fn calendar_feed_is_private_revocable_and_valid_ics() {
         let r = t.rpc("revoke_calendar_feed", json!({}), &emp).await;
         assert_eq!(r.body["data"]["enabled"], json!(false), "{}", r.body);
     }
-    assert_eq!(get(format!("/v1/calendar/{token2}.ics")).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(format!("/v1/calendar/{token2}.ics")).await.0,
+        StatusCode::NOT_FOUND
+    );
     let audits: i64 = sqlx::query_scalar("select count(*) from hrms.audit_logs where target_id = $1 and action like 'calendar_feed.%'")
         .bind(asha)
         .fetch_one(&t.pool)
@@ -3002,7 +3106,13 @@ async fn calendar_feed_is_private_revocable_and_valid_ics() {
     assert_eq!(audits, 3, "two creates and one revoke");
 
     // The internal function is not callable from the browser.
-    let r = t.rpc("internal_calendar_feed", json!({ "p_token_sha256": "00" }), &emp).await;
+    let r = t
+        .rpc(
+            "internal_calendar_feed",
+            json!({ "p_token_sha256": "00" }),
+            &emp,
+        )
+        .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
 }
 
@@ -3017,19 +3127,38 @@ async fn celebrations_respect_opt_in_and_never_leak_birth_year() {
     let (ravi, _) = t.employee(&admin, "B002").await;
     let (gone, _) = t.employee(&admin, "B003").await;
     let (org, _, _, _) = t.org_ids().await;
-    let today: chrono::NaiveDate = sqlx::query_scalar("select (now() at time zone 'Asia/Kolkata')::date")
-        .fetch_one(&t.pool)
-        .await
-        .unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Kolkata')::date")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
     let years_ago = |y: i32, plus_days: i64| {
         let d = today + chrono::Duration::days(plus_days);
-        chrono::NaiveDate::from_ymd_opt(chrono::Datelike::year(&d) - y, chrono::Datelike::month(&d), chrono::Datelike::day(&d).min(28)).unwrap()
+        chrono::NaiveDate::from_ymd_opt(
+            chrono::Datelike::year(&d) - y,
+            chrono::Datelike::month(&d),
+            chrono::Datelike::day(&d).min(28),
+        )
+        .unwrap()
     };
     // Join dates: Asha 3 years ago today, Ravi 1 year ago in 2 days, B003 inactive.
-    for (id, join) in [(asha, years_ago(3, 0)), (ravi, years_ago(1, 2)), (gone, years_ago(2, 0))] {
-        sqlx::query("update hrms.employees set join_date = $2 where id = $1").bind(id).bind(join).execute(&t.pool).await.unwrap();
+    for (id, join) in [
+        (asha, years_ago(3, 0)),
+        (ravi, years_ago(1, 2)),
+        (gone, years_ago(2, 0)),
+    ] {
+        sqlx::query("update hrms.employees set join_date = $2 where id = $1")
+            .bind(id)
+            .bind(join)
+            .execute(&t.pool)
+            .await
+            .unwrap();
     }
-    sqlx::query("update hrms.employees set status = 'inactive' where id = $1").bind(gone).execute(&t.pool).await.unwrap();
+    sqlx::query("update hrms.employees set status = 'inactive' where id = $1")
+        .bind(gone)
+        .execute(&t.pool)
+        .await
+        .unwrap();
     // Birthdays: Asha (today), Ravi (tomorrow).
     for (id, dob) in [(asha, years_ago(30, 0)), (ravi, years_ago(25, 1))] {
         sqlx::query(
@@ -3047,16 +3176,33 @@ async fn celebrations_respect_opt_in_and_never_leak_birth_year() {
     let list = |days: i64| {
         let t = &t;
         let emp = emp.clone();
-        async move { t.rpc("list_celebrations", json!({ "p_days": days }), &emp).await.body["data"]["rows"].clone() }
+        async move {
+            t.rpc("list_celebrations", json!({ "p_days": days }), &emp)
+                .await
+                .body["data"]["rows"]
+                .clone()
+        }
     };
     let rows = list(7).await;
     let kinds: Vec<(String, String)> = rows
         .as_array()
         .unwrap()
         .iter()
-        .map(|r| (r["name"].as_str().unwrap().to_owned(), r["kind"].as_str().unwrap().to_owned()))
+        .map(|r| {
+            (
+                r["name"].as_str().unwrap().to_owned(),
+                r["kind"].as_str().unwrap().to_owned(),
+            )
+        })
         .collect();
-    assert_eq!(kinds, vec![("Person B001".into(), "anniversary".into()), ("Person B002".into(), "anniversary".into())], "{rows}");
+    assert_eq!(
+        kinds,
+        vec![
+            ("Person B001".into(), "anniversary".into()),
+            ("Person B002".into(), "anniversary".into())
+        ],
+        "{rows}"
+    );
     assert_eq!(rows[0]["years"], json!(3));
     assert_eq!(rows[0]["is_today"], json!(true));
     assert_eq!(rows[0]["is_me"], json!(true));
@@ -3065,44 +3211,90 @@ async fn celebrations_respect_opt_in_and_never_leak_birth_year() {
 
     // Opt in to birthdays: shows day only, never the birth year.
     let r = t.rpc("get_celebration_prefs", json!({}), &emp).await;
-    assert_eq!(r.body["data"], json!({ "share_birthday": false, "share_anniversary": true, "has_birthday": true }), "{}", r.body);
-    let r = t.rpc("set_celebration_prefs", json!({ "p_share_birthday": true, "p_share_anniversary": false }), &emp).await;
+    assert_eq!(
+        r.body["data"],
+        json!({ "share_birthday": false, "share_anniversary": true, "has_birthday": true }),
+        "{}",
+        r.body
+    );
+    let r = t
+        .rpc(
+            "set_celebration_prefs",
+            json!({ "p_share_birthday": true, "p_share_anniversary": false }),
+            &emp,
+        )
+        .await;
     assert_eq!(r.body["data"]["share_birthday"], json!(true), "{}", r.body);
     let rows = list(7).await;
-    let mine: Vec<&Value> = rows.as_array().unwrap().iter().filter(|r| r["employee_id"] == json!(asha)).collect();
+    let mine: Vec<&Value> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["employee_id"] == json!(asha))
+        .collect();
     assert_eq!(mine.len(), 1, "{rows}");
     assert_eq!(mine[0]["kind"], json!("birthday"));
     assert_eq!(mine[0]["years"], Value::Null, "age is never shown");
     assert_eq!(mine[0]["date"], json!(today.to_string()));
     let birth_year = years_ago(30, 0).format("%Y").to_string();
-    assert!(!rows.to_string().contains(&format!("{birth_year}-")), "{rows}");
+    assert!(
+        !rows.to_string().contains(&format!("{birth_year}-")),
+        "{rows}"
+    );
     // Ravi did not opt in: no birthday for him.
-    assert!(!rows.as_array().unwrap().iter().any(|r| r["employee_id"] == json!(ravi) && r["kind"] == json!("birthday")));
+    assert!(
+        !rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["employee_id"] == json!(ravi) && r["kind"] == json!("birthday"))
+    );
 
     // Window edges: 0 days = today only; out-of-range values are clamped.
-    assert!(list(0).await.as_array().unwrap().iter().all(|r| r["is_today"] == json!(true)));
+    assert!(
+        list(0)
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["is_today"] == json!(true))
+    );
     assert_eq!(list(-5).await, list(0).await);
-    assert!(t.rpc("list_celebrations", json!({ "p_days": 400 }), &emp).await.status.is_success());
+    assert!(
+        t.rpc("list_celebrations", json!({ "p_days": 400 }), &emp)
+            .await
+            .status
+            .is_success()
+    );
 
     // Validation.
-    let r = t.rpc("set_celebration_prefs", json!({ "p_share_birthday": null, "p_share_anniversary": true }), &emp).await;
+    let r = t
+        .rpc(
+            "set_celebration_prefs",
+            json!({ "p_share_birthday": null, "p_share_anniversary": true }),
+            &emp,
+        )
+        .await;
     assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
 
     // Leap-day birthdays fall on 28 February in other years.
-    let leap: chrono::NaiveDate = sqlx::query_scalar("select hrms.next_yearly('2000-02-29', '2027-01-10')")
-        .fetch_one(&t.pool)
-        .await
-        .unwrap();
+    let leap: chrono::NaiveDate =
+        sqlx::query_scalar("select hrms.next_yearly('2000-02-29', '2027-01-10')")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
     assert_eq!(leap.to_string(), "2027-02-28");
-    let leap: chrono::NaiveDate = sqlx::query_scalar("select hrms.next_yearly('2000-02-29', '2028-01-10')")
-        .fetch_one(&t.pool)
-        .await
-        .unwrap();
+    let leap: chrono::NaiveDate =
+        sqlx::query_scalar("select hrms.next_yearly('2000-02-29', '2028-01-10')")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
     assert_eq!(leap.to_string(), "2028-02-29");
-    let wrap: chrono::NaiveDate = sqlx::query_scalar("select hrms.next_yearly('1990-01-02', '2026-12-30')")
-        .fetch_one(&t.pool)
-        .await
-        .unwrap();
+    let wrap: chrono::NaiveDate =
+        sqlx::query_scalar("select hrms.next_yearly('1990-01-02', '2026-12-30')")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
     assert_eq!(wrap.to_string(), "2027-01-02");
 }
 
@@ -3122,16 +3314,28 @@ async fn comp_off_for_a_day_off_is_reviewed_and_credited_once() {
         (id, r.session_cookie().unwrap())
     };
     let (org, _, _, _) = t.org_ids().await;
-    let today: chrono::NaiveDate = sqlx::query_scalar("select (now() at time zone 'Asia/Kolkata')::date")
-        .fetch_one(&t.pool)
-        .await
-        .unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Kolkata')::date")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
     let d = |n: i64| today - chrono::Duration::days(n);
     // Days: 2 ago = day off with 7h, 3 ago = day off with 4h, 4 ago = day off with 2h,
     // 5 ago = working day with 8h, 40 ago = day off with 8h (too old).
-    sqlx::query("update hrms.employees set join_date = $2 where id = $1").bind(asha).bind(d(60)).execute(&t.pool).await.unwrap();
+    sqlx::query("update hrms.employees set join_date = $2 where id = $1")
+        .bind(asha)
+        .bind(d(60))
+        .execute(&t.pool)
+        .await
+        .unwrap();
     let (_, _, _, office) = t.org_ids().await;
-    for (n, hours, required) in [(2, 7, false), (3, 4, false), (4, 2, false), (5, 8, true), (40, 8, false)] {
+    for (n, hours, required) in [
+        (2, 7, false),
+        (3, 4, false),
+        (4, 2, false),
+        (5, 8, true),
+        (40, 8, false),
+    ] {
         let inst: Uuid = sqlx::query_scalar(
             "insert into hrms.work_schedule_instances (org_id, employee_id, shift_date, kind, is_required, office_id,
                shift_version_id, timezone, start_at, end_at, lunch_paid, grace_seconds, early_entry_seconds, early_credit,
@@ -3184,11 +3388,28 @@ async fn comp_off_for_a_day_off_is_reviewed_and_credited_once() {
         (d(4), "at least 3 hours"),
     ] {
         let r = save(day, "Worked the stock count").await;
-        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{day}: {}", r.body);
-        assert!(r.body["error"]["field_errors"]["start_date"].as_str().unwrap().contains(needle), "{}", r.body);
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{day}: {}",
+            r.body
+        );
+        assert!(
+            r.body["error"]["field_errors"]["start_date"]
+                .as_str()
+                .unwrap()
+                .contains(needle),
+            "{}",
+            r.body
+        );
     }
     let r = save(d(2), "no").await;
-    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "reason required: {}", r.body);
+    assert_eq!(
+        r.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "reason required: {}",
+        r.body
+    );
 
     // 7 hours -> full day; 4 hours -> half day.
     let r = save(d(2), "Worked the stock count").await;
@@ -3198,12 +3419,21 @@ async fn comp_off_for_a_day_off_is_reviewed_and_credited_once() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let half: Uuid = r.body["data"]["id"].as_str().unwrap().parse().unwrap();
     let r = save(d(2), "Again").await;
-    assert!(r.body["error"]["field_errors"]["start_date"].as_str().unwrap().contains("already asked"), "{}", r.body);
-    let units: Vec<i32> = sqlx::query_scalar("select units from hrms.requests where id = any($1) order by target_shift_date desc")
-        .bind(vec![full, half])
-        .fetch_all(&t.pool)
-        .await
-        .unwrap();
+    assert!(
+        r.body["error"]["field_errors"]["start_date"]
+            .as_str()
+            .unwrap()
+            .contains("already asked"),
+        "{}",
+        r.body
+    );
+    let units: Vec<i32> = sqlx::query_scalar(
+        "select units from hrms.requests where id = any($1) order by target_shift_date desc",
+    )
+    .bind(vec![full, half])
+    .fetch_all(&t.pool)
+    .await
+    .unwrap();
     assert_eq!(units, vec![2, 1]);
     // HR was told.
     let told: i64 = sqlx::query_scalar("select count(*) from hrms.notifications where title = 'Comp-off request' and body like '%asked for comp-off for working%'")
@@ -3216,8 +3446,16 @@ async fn comp_off_for_a_day_off_is_reviewed_and_credited_once() {
     let decide = |id: Uuid, cookie: String, decision: &'static str| {
         let t = &t;
         async move {
-            let r = t.rpc("open_request_for_review", json!({ "p_request_id": id, "p_reason": null }), &cookie).await;
-            let v = r.body["version"].as_i64().or_else(|| r.body["data"]["version"].as_i64());
+            let r = t
+                .rpc(
+                    "open_request_for_review",
+                    json!({ "p_request_id": id, "p_reason": null }),
+                    &cookie,
+                )
+                .await;
+            let v = r.body["version"]
+                .as_i64()
+                .or_else(|| r.body["data"]["version"].as_i64());
             t.rpc(
                 "decide_request",
                 json!({ "p_request_id": id, "p_decision": decision, "p_reason": "ok", "p_expected_version": v, "p_operation_key": Uuid::new_v4() }),
@@ -3244,7 +3482,10 @@ async fn comp_off_for_a_day_off_is_reviewed_and_credited_once() {
     .fetch_one(&t.pool)
     .await
     .unwrap();
-    assert_eq!((code.as_str(), units, source.as_str()), ("COMP_OFF", 2, "comp_off"));
+    assert_eq!(
+        (code.as_str(), units, source.as_str()),
+        ("COMP_OFF", 2, "comp_off")
+    );
     assert!(valid_to <= d(2) + chrono::Duration::days(91));
     let r = t.rpc("get_leave_balances", json!({}), &emp).await;
     assert!(r.body.to_string().contains("Comp off"), "{}", r.body);
@@ -3253,7 +3494,10 @@ async fn comp_off_for_a_day_off_is_reviewed_and_credited_once() {
         .fetch_one(&t.pool)
         .await
         .unwrap();
-    assert!(notice.contains("added to your leave balance (1 day)"), "{notice}");
+    assert!(
+        notice.contains("added to your leave balance (1 day)"),
+        "{notice}"
+    );
 
     // Crediting twice is impossible (idempotent apply).
     let req: (Uuid,) = (full,);
@@ -3262,7 +3506,11 @@ async fn comp_off_for_a_day_off_is_reviewed_and_credited_once() {
         .execute(&t.pool)
         .await
         .unwrap();
-    let n: i64 = sqlx::query_scalar("select count(*) from hrms.leave_ledger where request_id = $1").bind(full).fetch_one(&t.pool).await.unwrap();
+    let n: i64 = sqlx::query_scalar("select count(*) from hrms.leave_ledger where request_id = $1")
+        .bind(full)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
     assert_eq!(n, 1);
 
     // A rejected day can be asked again; an approved one cannot.
@@ -3300,21 +3548,46 @@ async fn two_step_sign_in_end_to_end() {
     let admin = t.admin().await;
     let (hr_id, temp) = t.hire(&admin, "M001", Some("hr")).await;
     let r = t.login("M001", &temp).await;
-    let r = t.change_password(&r.session_cookie().unwrap(), &temp, NEW_PW).await;
+    let r = t
+        .change_password(&r.session_cookie().unwrap(), &temp, NEW_PW)
+        .await;
     let hr = r.session_cookie().unwrap();
-    let now_step = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() / STEP;
+    let now_step = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / STEP
+    };
 
     let r = t.rpc("get_two_step_status", json!({}), &hr).await;
     assert_eq!(r.body["data"]["enabled"], json!(false), "{}", r.body);
     assert_eq!(r.body["data"]["recommended"], json!(true));
 
     // Setup needs the password.
-    let r = t.post("/v1/auth/two-step/setup", json!({ "password": "wrong" }), Some(&hr)).await;
+    let r = t
+        .post(
+            "/v1/auth/two-step/setup",
+            json!({ "password": "wrong" }),
+            Some(&hr),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
-    let r = t.post("/v1/auth/two-step/setup", json!({ "password": NEW_PW }), Some(&hr)).await;
+    let r = t
+        .post(
+            "/v1/auth/two-step/setup",
+            json!({ "password": NEW_PW }),
+            Some(&hr),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let secret_b32 = r.body["data"]["secret"].as_str().unwrap().to_owned();
-    assert!(r.body["data"]["uri"].as_str().unwrap().starts_with("otpauth://totp/HRMS:M001?secret="));
+    assert!(
+        r.body["data"]["uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/HRMS:M001?secret=")
+    );
     assert!(r.body["data"]["qr_svg"].as_str().unwrap().contains("<svg"));
     let secret = b32_decode(&secret_b32);
     let stored: Vec<u8> = sqlx::query_scalar("select secret_enc from iam.totp_factors f join hrms.employees e on e.auth_user_id = f.user_id where e.id = $1")
@@ -3322,20 +3595,47 @@ async fn two_step_sign_in_end_to_end() {
         .fetch_one(&t.pool)
         .await
         .unwrap();
-    assert!(!stored.windows(secret.len()).any(|w| w == secret.as_slice()), "secret is sealed");
+    assert!(
+        !stored.windows(secret.len()).any(|w| w == secret.as_slice()),
+        "secret is sealed"
+    );
     let code = |step: u64| format!("{:06}", hotp(&secret, step));
 
     // Not on until a right code is entered; password alone still signs in.
-    let r = t.post("/v1/auth/two-step/enable", json!({ "code": "000000" }), Some(&hr)).await;
+    let r = t
+        .post(
+            "/v1/auth/two-step/enable",
+            json!({ "code": "000000" }),
+            Some(&hr),
+        )
+        .await;
     assert_eq!(r.code(), "INVALID_CODE", "{}", r.body);
     let r = t.login("M001", NEW_PW).await;
     assert!(r.session_cookie().is_some());
-    let r = t.post("/v1/auth/two-step/enable", json!({ "code": code(now_step() - 1) }), Some(&hr)).await;
+    let r = t
+        .post(
+            "/v1/auth/two-step/enable",
+            json!({ "code": code(now_step() - 1) }),
+            Some(&hr),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let recovery: Vec<String> = serde_json::from_value(r.body["data"]["recovery_codes"].clone()).unwrap();
+    let recovery: Vec<String> =
+        serde_json::from_value(r.body["data"]["recovery_codes"].clone()).unwrap();
     assert_eq!(recovery.len(), 10);
-    let r = t.post("/v1/auth/two-step/setup", json!({ "password": NEW_PW }), Some(&hr)).await;
-    assert_eq!(r.code(), "ALREADY_ON", "cannot silently replace: {}", r.body);
+    let r = t
+        .post(
+            "/v1/auth/two-step/setup",
+            json!({ "password": NEW_PW }),
+            Some(&hr),
+        )
+        .await;
+    assert_eq!(
+        r.code(),
+        "ALREADY_ON",
+        "cannot silently replace: {}",
+        r.body
+    );
 
     // Password now yields a challenge, not a session.
     let r = t.login("M001", NEW_PW).await;
@@ -3344,41 +3644,82 @@ async fn two_step_sign_in_end_to_end() {
     assert_eq!(r.body["data"]["two_step_required"], json!(true));
     let challenge = r.body["data"]["challenge"].as_str().unwrap().to_owned();
     // Wrong password still fails the same generic way.
-    assert_eq!(t.login("M001", "nope-nope-nope").await.code(), "AUTH_FAILED");
+    assert_eq!(
+        t.login("M001", "nope-nope-nope").await.code(),
+        "AUTH_FAILED"
+    );
 
-    let step2 = |ch: &str, c: &str| t.post("/v1/auth/login/two-step", json!({ "challenge": ch, "code": c }), None);
+    let step2 = |ch: &str, c: &str| {
+        t.post(
+            "/v1/auth/login/two-step",
+            json!({ "challenge": ch, "code": c }),
+            None,
+        )
+    };
     assert_eq!(step2(&challenge, "123456").await.code(), "INVALID_CODE");
-    assert_eq!(step2("not-a-token", &code(now_step())).await.code(), "CHALLENGE_EXPIRED");
+    assert_eq!(
+        step2("not-a-token", &code(now_step())).await.code(),
+        "CHALLENGE_EXPIRED"
+    );
     // The code used to enable cannot be replayed.
-    assert_eq!(step2(&challenge, &code(now_step() - 1)).await.code(), "INVALID_CODE");
+    assert_eq!(
+        step2(&challenge, &code(now_step() - 1)).await.code(),
+        "INVALID_CODE"
+    );
     let r = step2(&challenge, &code(now_step())).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let signed_in = r.session_cookie().expect("session after the code");
     assert_eq!(r.body["data"]["must_change_password"], json!(false));
-    assert_eq!(t.rpc("get_session_context", json!({}), &signed_in).await.status, StatusCode::OK);
+    assert_eq!(
+        t.rpc("get_session_context", json!({}), &signed_in)
+            .await
+            .status,
+        StatusCode::OK
+    );
     // A challenge works once.
-    assert_eq!(step2(&challenge, &code(now_step() + 1)).await.code(), "CHALLENGE_EXPIRED");
+    assert_eq!(
+        step2(&challenge, &code(now_step() + 1)).await.code(),
+        "CHALLENGE_EXPIRED"
+    );
 
     // Five wrong tries end the challenge even for the right code.
-    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"].as_str().unwrap().to_owned();
+    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     for _ in 0..5 {
         assert_ne!(step2(&ch, "999999").await.status, StatusCode::OK);
     }
-    assert_eq!(step2(&ch, &code(now_step() + 1)).await.code(), "CHALLENGE_EXPIRED");
+    assert_eq!(
+        step2(&ch, &code(now_step() + 1)).await.code(),
+        "CHALLENGE_EXPIRED"
+    );
 
     // Expired challenges are refused.
-    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"].as_str().unwrap().to_owned();
+    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     sqlx::query("update iam.login_challenges set expires_at = now() - interval '1 second' where consumed_at is null")
         .execute(&t.pool)
         .await
         .unwrap();
-    assert_eq!(step2(&ch, &code(now_step() + 1)).await.code(), "CHALLENGE_EXPIRED");
+    assert_eq!(
+        step2(&ch, &code(now_step() + 1)).await.code(),
+        "CHALLENGE_EXPIRED"
+    );
 
     // A recovery code works once (any case/spacing) and tells the owner.
-    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"].as_str().unwrap().to_owned();
+    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let r = step2(&ch, &recovery[0].to_lowercase().replace('-', " ")).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"].as_str().unwrap().to_owned();
+    let ch = t.login("M001", NEW_PW).await.body["data"]["challenge"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(step2(&ch, &recovery[0]).await.code(), "INVALID_CODE");
     let told: i64 = sqlx::query_scalar("select count(*) from hrms.notifications where recipient_id = $1 and kind = 'account.two_step_recovery_used'")
         .bind(hr_id)
@@ -3390,51 +3731,145 @@ async fn two_step_sign_in_end_to_end() {
     assert_eq!(r.body["data"]["recovery_left"], json!(9), "{}", r.body);
 
     // New recovery codes need password + code; old ones stop working.
-    let r = t.post("/v1/auth/two-step/recovery", json!({ "password": NEW_PW, "code": recovery[1] }), Some(&hr)).await;
+    let r = t
+        .post(
+            "/v1/auth/two-step/recovery",
+            json!({ "password": NEW_PW, "code": recovery[1] }),
+            Some(&hr),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let fresh: Vec<String> = serde_json::from_value(r.body["data"]["recovery_codes"].clone()).unwrap();
+    let fresh: Vec<String> =
+        serde_json::from_value(r.body["data"]["recovery_codes"].clone()).unwrap();
     assert!(fresh.iter().all(|c| !recovery.contains(c)));
     let r = t.rpc("get_two_step_status", json!({}), &hr).await;
     assert_eq!(r.body["data"]["recovery_left"], json!(10));
 
     // Admin reset: needs the Admin's password grant, cannot target self, audited.
     let (emp_id, _) = t.employee(&admin, "M002").await;
-    let r = t.rpc("reset_two_step", json!({ "p_employee_id": hr_id }), &admin).await;
+    let r = t
+        .rpc("reset_two_step", json!({ "p_employee_id": hr_id }), &admin)
+        .await;
     assert_eq!(r.code(), "REAUTH_REQUIRED", "{}", r.body);
-    let r = t.post("/v1/auth/reauth", json!({ "action": "mfa.reset", "password": NEW_PW, "target_id": hr_id }), Some(&admin)).await;
+    let r = t
+        .post(
+            "/v1/auth/reauth",
+            json!({ "action": "mfa.reset", "password": NEW_PW, "target_id": hr_id }),
+            Some(&admin),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let r = t.rpc("get_employee_two_step", json!({ "p_employee_id": hr_id }), &admin).await;
+    let r = t
+        .rpc(
+            "get_employee_two_step",
+            json!({ "p_employee_id": hr_id }),
+            &admin,
+        )
+        .await;
     assert_eq!(r.body["data"]["enabled"], json!(true));
-    let r = t.rpc("reset_two_step", json!({ "p_employee_id": hr_id }), &admin).await;
+    let r = t
+        .rpc("reset_two_step", json!({ "p_employee_id": hr_id }), &admin)
+        .await;
     assert_eq!(r.body["data"]["reset"], json!(true), "{}", r.body);
     let r = t.login("M001", NEW_PW).await;
-    assert!(r.session_cookie().is_some(), "password alone works again: {}", r.body);
-    let r = t.rpc("reset_two_step", json!({ "p_employee_id": emp_id }), &hr).await;
-    assert_eq!(r.status, StatusCode::FORBIDDEN, "HR cannot reset: {}", r.body);
+    assert!(
+        r.session_cookie().is_some(),
+        "password alone works again: {}",
+        r.body
+    );
+    let r = t
+        .rpc("reset_two_step", json!({ "p_employee_id": emp_id }), &hr)
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "HR cannot reset: {}",
+        r.body
+    );
     let audits: Vec<String> = sqlx::query_scalar("select action from hrms.audit_logs where target_id = $1 and action like 'two_step.%' order by created_at, id")
         .bind(hr_id)
         .fetch_all(&t.pool)
         .await
         .unwrap();
     // The second recovery_used is the code spent to get new codes.
-    assert_eq!(audits, vec!["two_step.enabled", "two_step.recovery_used", "two_step.recovery_used", "two_step.codes_replaced", "two_step.reset"]);
+    assert_eq!(
+        audits,
+        vec![
+            "two_step.enabled",
+            "two_step.recovery_used",
+            "two_step.recovery_used",
+            "two_step.codes_replaced",
+            "two_step.reset"
+        ]
+    );
 
     // Turn on again, then off by the owner (password + code). The password
     // check allows 5 tries per 15 minutes; start this part with a fresh window.
-    sqlx::query("delete from hrms.rate_limit_buckets where bucket like 'reauth:%'").execute(&t.pool).await.unwrap();
-    let r = t.post("/v1/auth/two-step/setup", json!({ "password": NEW_PW }), Some(&hr)).await;
+    sqlx::query("delete from hrms.rate_limit_buckets where bucket like 'reauth:%'")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let r = t
+        .post(
+            "/v1/auth/two-step/setup",
+            json!({ "password": NEW_PW }),
+            Some(&hr),
+        )
+        .await;
     let secret = b32_decode(r.body["data"]["secret"].as_str().unwrap());
     let code = |step: u64| format!("{:06}", hotp(&secret, step));
-    let r = t.post("/v1/auth/two-step/enable", json!({ "code": code(now_step()) }), Some(&hr)).await;
+    let r = t
+        .post(
+            "/v1/auth/two-step/enable",
+            json!({ "code": code(now_step()) }),
+            Some(&hr),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let r = t.post("/v1/auth/two-step/disable", json!({ "password": NEW_PW, "code": code(now_step()) }), Some(&hr)).await;
+    let r = t
+        .post(
+            "/v1/auth/two-step/disable",
+            json!({ "password": NEW_PW, "code": code(now_step()) }),
+            Some(&hr),
+        )
+        .await;
     assert_eq!(r.code(), "INVALID_CODE", "same step twice: {}", r.body);
-    let r = t.post("/v1/auth/two-step/disable", json!({ "password": NEW_PW, "code": code(now_step() + 1) }), Some(&hr)).await;
+    let r = t
+        .post(
+            "/v1/auth/two-step/disable",
+            json!({ "password": NEW_PW, "code": code(now_step() + 1) }),
+            Some(&hr),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let r = t.post("/v1/auth/two-step/disable", json!({ "password": NEW_PW, "code": "123456" }), Some(&hr)).await;
+    let r = t
+        .post(
+            "/v1/auth/two-step/disable",
+            json!({ "password": NEW_PW, "code": "123456" }),
+            Some(&hr),
+        )
+        .await;
     assert_eq!(r.code(), "NOT_ON");
 
     // Management needs a session; internal functions are not RPCs.
-    assert_eq!(t.post("/v1/auth/two-step/setup", json!({ "password": NEW_PW }), None).await.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(t.rpc("internal_two_step_event", json!({ "p_auth_user_id": Uuid::nil(), "p_event": "enabled" }), &hr).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        t.post(
+            "/v1/auth/two-step/setup",
+            json!({ "password": NEW_PW }),
+            None
+        )
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        t.rpc(
+            "internal_two_step_event",
+            json!({ "p_auth_user_id": Uuid::nil(), "p_event": "enabled" }),
+            &hr
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
 }

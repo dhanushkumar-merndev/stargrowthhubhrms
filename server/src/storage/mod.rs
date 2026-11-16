@@ -1,10 +1,12 @@
 //! Private object storage for documents, payslips, avatars and machine punch
-//! photos. Production uses Cloudflare R2 (S3 API, signed requests from the
-//! server only: browsers never get storage credentials or bucket URLs).
+//! photos. Production uses an S3-compatible bucket: Supabase Storage (S3_*)
+//! or Cloudflare R2 (R2_*). Requests are signed by the server only: browsers
+//! never get storage credentials or bucket URLs.
 //! Development and tests use a local folder with the same rules.
 //!
 //! Every logical bucket (`employee-files`, `device-photos`, ...) is a prefix
-//! inside one R2 bucket. Objects are written once (`If-None-Match: *`).
+//! inside one bucket. Objects are written once (`If-None-Match: *`, plus an
+//! existence check for S3 services that ignore that header).
 
 pub mod sigv4;
 
@@ -22,6 +24,11 @@ pub enum StoreError {
 pub struct R2 {
     endpoint: String,
     host: String,
+    /// Path before `/bucket/key`, e.g. `/storage/v1/s3` on Supabase; empty on R2.
+    base_path: String,
+    region: String,
+    /// HEAD before PUT, for services that ignore `If-None-Match`.
+    check_exists: bool,
     bucket: String,
     access_key: String,
     secret_key: String,
@@ -69,14 +76,55 @@ pub fn object_path(bucket: &str, key: &str) -> Result<String, StoreError> {
 }
 
 impl Store {
-    /// R2 when all four R2_* variables are set, else FILE_STORE_DIR, else None
-    /// (uploads and downloads then answer 503 and machine photos are logged only).
+    /// S3 when all five S3_* variables are set (Supabase Storage or any
+    /// S3-compatible service), R2 when all four R2_* are set, else
+    /// FILE_STORE_DIR, else None (uploads and downloads then answer 503 and
+    /// machine photos are logged only).
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Option<Store>, String> {
         let v = |k: &str| {
             get(k)
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
         };
+        let s3 = [
+            v("S3_ENDPOINT"),
+            v("S3_REGION"),
+            v("S3_ACCESS_KEY_ID"),
+            v("S3_SECRET_ACCESS_KEY"),
+            v("S3_BUCKET"),
+        ];
+        match s3 {
+            [None, None, None, None, None] => {}
+            [
+                Some(endpoint),
+                Some(region),
+                Some(access_key),
+                Some(secret_key),
+                Some(bucket),
+            ] => {
+                if v("R2_ACCOUNT_ID").is_some() {
+                    return Err("set either S3_* or R2_*, not both".into());
+                }
+                return S3Endpoint::parse(&endpoint, &region).and_then(|e| {
+                    R2::new(
+                        e.origin,
+                        e.host,
+                        e.base_path,
+                        e.region,
+                        true,
+                        bucket,
+                        access_key,
+                        secret_key,
+                    )
+                    .map(|r| Some(Store::R2(r)))
+                });
+            }
+            _ => {
+                return Err(
+                    "set all of S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY and S3_BUCKET, or none".into(),
+                );
+            }
+        }
         let r2 = [
             v("R2_ACCOUNT_ID"),
             v("R2_ACCESS_KEY_ID"),
@@ -89,7 +137,16 @@ impl Store {
                     return Err("R2_ACCOUNT_ID must be alphanumeric".into());
                 }
                 let host = format!("{account}.r2.cloudflarestorage.com");
-                Ok(Some(Store::R2(R2::new(format!("https://{host}"), host, bucket, access_key, secret_key)?)))
+                Ok(Some(Store::R2(R2::new(
+                    format!("https://{host}"),
+                    host,
+                    String::new(),
+                    "auto".into(),
+                    false,
+                    bucket,
+                    access_key,
+                    secret_key,
+                )?)))
             }
             [None, None, None, None] => Ok(v("FILE_STORE_DIR").map(|d| Store::Dir(PathBuf::from(d)))),
             _ => Err("set all of R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET, or none".into()),
@@ -151,10 +208,66 @@ fn io(e: std::io::Error) -> StoreError {
     StoreError::Unavailable(e.kind().to_string())
 }
 
+/// A checked `https://host[:port]/optional/path` S3 endpoint.
+#[derive(Debug, PartialEq)]
+struct S3Endpoint {
+    origin: String,
+    host: String,
+    base_path: String,
+    region: String,
+}
+
+impl S3Endpoint {
+    fn parse(endpoint: &str, region: &str) -> Result<Self, String> {
+        let url = reqwest::Url::parse(endpoint)
+            .map_err(|_| "S3_ENDPOINT is not a valid URL".to_string())?;
+        if url.scheme() != "https" {
+            return Err("S3_ENDPOINT must start with https://".into());
+        }
+        if url.query().is_some()
+            || url.fragment().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err("S3_ENDPOINT must be a plain https://host/path".into());
+        }
+        let host = match (url.host_str(), url.port()) {
+            (Some(h), Some(p)) => format!("{h}:{p}"),
+            (Some(h), None) => h.to_owned(),
+            _ => return Err("S3_ENDPOINT has no host".into()),
+        };
+        let base_path = url.path().trim_end_matches('/').to_owned();
+        let path_ok = base_path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'));
+        let region_ok = !region.is_empty()
+            && region.len() <= 32
+            && region
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        if !path_ok {
+            return Err("S3_ENDPOINT path has unexpected characters".into());
+        }
+        if !region_ok {
+            return Err("S3_REGION must look like ap-south-1".into());
+        }
+        Ok(Self {
+            origin: format!("https://{host}"),
+            host,
+            base_path,
+            region: region.to_owned(),
+        })
+    }
+}
+
 impl R2 {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         endpoint: String,
         host: String,
+        base_path: String,
+        region: String,
+        check_exists: bool,
         bucket: String,
         access_key: String,
         secret_key: String,
@@ -168,6 +281,9 @@ impl R2 {
         Ok(Self {
             endpoint,
             host,
+            base_path,
+            region,
+            check_exists,
             bucket,
             access_key,
             secret_key,
@@ -183,7 +299,8 @@ impl R2 {
         extra: &[(&'static str, String)],
     ) -> reqwest::RequestBuilder {
         let url_path = format!(
-            "/{}/{}",
+            "{}/{}/{}",
+            self.base_path,
             sigv4::uri_encode(&self.bucket, false),
             sigv4::uri_encode(path, true)
         );
@@ -202,7 +319,7 @@ impl R2 {
                 headers: &headers,
                 payload_sha256: payload_sha,
                 amz_date: &amz_date,
-                region: "auto",
+                region: &self.region,
                 service: "s3",
             },
             &self.access_key,
@@ -219,6 +336,19 @@ impl R2 {
     }
 
     async fn put(&self, path: &str, bytes: &[u8], mime: &str) -> Result<bool, StoreError> {
+        if self.check_exists {
+            let empty = sigv4::sha256_hex(b"");
+            let head = self
+                .signed(reqwest::Method::HEAD, path, &empty, &[])
+                .send()
+                .await
+                .map_err(|e| StoreError::Unavailable(e.without_url().to_string()))?;
+            match head.status().as_u16() {
+                200 => return Ok(false),
+                404 => {}
+                s => return Err(StoreError::Unavailable(format!("HEAD {s}"))),
+            }
+        }
         let sha = sigv4::sha256_hex(bytes);
         let res = self
             .signed(
@@ -337,8 +467,84 @@ mod tests {
         ]))
         .unwrap()
         .unwrap();
-        assert!(matches!(&r2, Store::R2(r) if r.host == "abc123.r2.cloudflarestorage.com"));
+        assert!(
+            matches!(&r2, Store::R2(r) if r.host == "abc123.r2.cloudflarestorage.com"
+            && r.base_path.is_empty() && r.region == "auto" && !r.check_exists)
+        );
         assert!(format!("{r2:?}").contains("<redacted>"));
+    }
+
+    const SUPA: &[(&str, &str)] = &[
+        (
+            "S3_ENDPOINT",
+            "https://abcdefgh.storage.supabase.co/storage/v1/s3/",
+        ),
+        ("S3_REGION", "ap-south-1"),
+        ("S3_ACCESS_KEY_ID", "a"),
+        ("S3_SECRET_ACCESS_KEY", "s"),
+        ("S3_BUCKET", "web-hrms-files"),
+    ];
+
+    fn lookup(pairs: Vec<(&'static str, &'static str)>) -> impl Fn(&str) -> Option<String> {
+        move |k: &str| {
+            pairs
+                .iter()
+                .find(|(a, _)| *a == k)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn s3_config_for_supabase_storage() {
+        let s = Store::from_lookup(lookup(SUPA.to_vec())).unwrap().unwrap();
+        let Store::R2(r) = &s else {
+            panic!("expected S3 store")
+        };
+        assert_eq!(r.endpoint, "https://abcdefgh.storage.supabase.co");
+        assert_eq!(r.host, "abcdefgh.storage.supabase.co");
+        assert_eq!(r.base_path, "/storage/v1/s3");
+        assert_eq!(r.region, "ap-south-1");
+        assert!(r.check_exists);
+        assert_eq!(r.bucket, "web-hrms-files");
+        assert_eq!(format!("{s:?}"), "Store::R2(web-hrms-files/<redacted>)");
+    }
+
+    #[test]
+    fn s3_config_edges() {
+        // partial
+        let mut p = SUPA.to_vec();
+        p.pop();
+        assert!(
+            Store::from_lookup(lookup(p))
+                .unwrap_err()
+                .contains("S3_BUCKET")
+        );
+        // both S3 and R2
+        let mut p = SUPA.to_vec();
+        p.push(("R2_ACCOUNT_ID", "abc"));
+        assert!(
+            Store::from_lookup(lookup(p))
+                .unwrap_err()
+                .contains("not both")
+        );
+        // bad endpoints and regions
+        for (ep, region) in [
+            ("http://x.supabase.co/storage/v1/s3", "ap-south-1"),
+            ("not a url", "ap-south-1"),
+            ("https://user:pw@x.supabase.co/s3", "ap-south-1"),
+            ("https://x.supabase.co/s3?x=1", "ap-south-1"),
+            ("https://x.supabase.co/s%20b", "ap-south-1"),
+            ("https://x.supabase.co/storage/v1/s3", ""),
+            ("https://x.supabase.co/storage/v1/s3", "ap south"),
+        ] {
+            assert!(S3Endpoint::parse(ep, region).is_err(), "{ep} {region}");
+        }
+        // port and no path
+        let e = S3Endpoint::parse("https://minio.local:9000", "us-east-1").unwrap();
+        assert_eq!(
+            (e.origin.as_str(), e.host.as_str(), e.base_path.as_str()),
+            ("https://minio.local:9000", "minio.local:9000", "")
+        );
     }
 
     #[tokio::test]

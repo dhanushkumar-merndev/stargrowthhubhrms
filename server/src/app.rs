@@ -123,8 +123,14 @@ pub fn router(state: AppState) -> Router {
         .route("/files", post(crate::files::upload))
         .route("/files/{version}", get(crate::files::download))
         .route("/device-photos/{punch}", get(crate::files::device_photo))
-        .route("/archive/{job}/files/{version}", get(crate::archive::export_file))
-        .route("/archive/cleanup/{job}", post(crate::archive::cleanup_batch))
+        .route(
+            "/archive/{job}/files/{version}",
+            get(crate::archive::export_file),
+        )
+        .route(
+            "/archive/cleanup/{job}",
+            post(crate::archive::cleanup_batch),
+        )
         .layer(DefaultBodyLimit::disable());
 
     let rpc_routes = Router::new()
@@ -299,8 +305,14 @@ fn json_rejection(e: JsonRejection) -> ApiError {
 
 /// `{"data": .., "version": null, "request_id": ..}` like the HRMS Edge Functions.
 /// Public Web Push key for `PushManager.subscribe`; signed-in users only.
-async fn push_config(State(state): State<AppState>, session: crate::auth::session::Session) -> Json<Value> {
-    ok(json!({ "public_key": state.vapid_public_key }), session.request_id)
+async fn push_config(
+    State(state): State<AppState>,
+    session: crate::auth::session::Session,
+) -> Json<Value> {
+    ok(
+        json!({ "public_key": state.vapid_public_key }),
+        session.request_id,
+    )
 }
 
 pub fn ok(data: Value, request_id: Uuid) -> Json<Value> {
