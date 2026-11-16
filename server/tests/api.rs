@@ -4135,3 +4135,488 @@ async fn hr_fetches_people_from_machines() {
         .await;
     assert_eq!(r.code(), "VALIDATION_FAILED", "{}", r.body);
 }
+
+// ============================================================ tasks and daily work reports
+
+struct Who {
+    id: String,
+    cookie: String,
+}
+
+impl T {
+    /// Hires someone with a generated ID and signs them in with a permanent password.
+    async fn person(&self, admin: &str, role: Option<&str>) -> Who {
+        let d = self.hire_auto(admin, role, json!({})).await;
+        let temp = d["temporary_password"].as_str().unwrap();
+        let c = self
+            .login(d["employee_code"].as_str().unwrap(), temp)
+            .await
+            .session_cookie()
+            .unwrap();
+        let r = self.change_password(&c, temp, "Person-Own-Pass-2026").await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        Who {
+            id: d["employee_id"].as_str().unwrap().to_owned(),
+            cookie: r.session_cookie().unwrap(),
+        }
+    }
+
+    async fn sql(&self, q: &str, args: &[&str]) {
+        let mut x = sqlx::query(q);
+        for a in args {
+            x = x.bind(*a);
+        }
+        x.execute(&self.pool).await.unwrap();
+    }
+
+    /// lead leads the default team; member is in it; other is in a second team.
+    async fn reporting_lines(&self, admin: &str) -> (Who, Who, Who, Who) {
+        let (org, team, _, _) = self.org_ids().await;
+        let lead = self.person(admin, None).await;
+        let member = self.person(admin, None).await;
+        let other = self.person(admin, None).await;
+        let hr = self.person(admin, Some("hr")).await;
+        self.sql(
+            "delete from hrms.team_managers where team_id = $1::uuid",
+            &[&team.to_string()],
+        )
+        .await;
+        self.sql(
+            "insert into hrms.team_managers (org_id, team_id, manager_id, effective_from) values ($1::uuid, $2::uuid, $3::uuid, '2026-01-02')",
+            &[&org.to_string(), &team.to_string(), &lead.id],
+        )
+        .await;
+        self.sql(
+            "with t as (insert into hrms.teams (org_id, name) values ($1::uuid, 'Second ' || gen_random_uuid()) returning id)
+             update hrms.team_memberships set team_id = (select id from t) where employee_id = $2::uuid",
+            &[&org.to_string(), &other.id],
+        )
+        .await;
+        (lead, member, other, hr)
+    }
+}
+
+#[tokio::test]
+async fn tasks_follow_the_reporting_lines() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let (lead, member, other, hr) = t.reporting_lines(&admin).await;
+    let give = |by: String, to: String, title: &'static str| {
+        let t = &t;
+        async move {
+            t.rpc(
+                "create_task",
+                json!({ "p_assigned_to": to, "p_title": title, "p_priority": "high" }),
+                &by,
+            )
+            .await
+        }
+    };
+    // Who may give tasks to whom.
+    let r = give(lead.cookie.clone(), member.id.clone(), "Fix the report").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let task = r.body["data"].clone();
+    assert_eq!(task["status"], "todo");
+    for (by, to) in [(&lead, &other), (&lead, &hr), (&member, &other), (&hr, &hr)] {
+        if by.id == to.id {
+            continue;
+        }
+        assert_eq!(
+            give(by.cookie.clone(), to.id.clone(), "Nope").await.code(),
+            "ACCESS_DENIED"
+        );
+    }
+    let admin_id: String =
+        sqlx::query_scalar("select id::text from hrms.employees where employee_code = $1")
+            .bind(&t.admin_code)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        give(hr.cookie.clone(), admin_id.clone(), "Nope")
+            .await
+            .code(),
+        "ACCESS_DENIED"
+    );
+    assert_eq!(
+        give(hr.cookie.clone(), lead.id.clone(), "Plan the week")
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        give(member.cookie.clone(), member.id.clone(), "My own to-do")
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        give(admin.clone(), hr.id.clone(), "Audit").await.status,
+        StatusCode::OK
+    );
+    // Validation.
+    let r = t.rpc("create_task", json!({ "p_assigned_to": member.id, "p_title": " ", "p_due_date": "2020-01-01", "p_priority": "urgent" }), &lead.cookie).await;
+    assert_eq!(r.code(), "VALIDATION_FAILED");
+    let f = &r.body["error"]["field_errors"];
+    assert!(
+        f["title"].is_string() && f["due_date"].is_string() && f["priority"].is_string(),
+        "{}",
+        r.body
+    );
+    // The assignee was told.
+    let n: i64 = sqlx::query_scalar("select count(*) from hrms.notifications where recipient_id = $1::uuid and kind = 'task.assigned'")
+        .bind(&member.id)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "no notification for a personal to-do");
+    // Assignee: status only.
+    let id = task["id"].as_str().unwrap();
+    let r = t
+        .rpc(
+            "update_task",
+            json!({ "p_task_id": id, "p_patch": { "title": "Mine now" }, "p_expected_version": 1 }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(r.code(), "ACCESS_DENIED");
+    let r = t.rpc("update_task", json!({ "p_task_id": id, "p_patch": { "status": "cancelled" }, "p_expected_version": 1 }), &member.cookie).await;
+    assert_eq!(r.code(), "ACCESS_DENIED");
+    let r = t
+        .rpc(
+            "update_task",
+            json!({ "p_task_id": id, "p_patch": { "status": "done" }, "p_expected_version": 1 }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(r.body["data"]["completed_at"].is_string());
+    let n: i64 = sqlx::query_scalar("select count(*) from hrms.notifications where recipient_id = $1::uuid and kind = 'task.done'")
+        .bind(&lead.id)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    // Stale version; unknown field.
+    let r = t
+        .rpc(
+            "update_task",
+            json!({ "p_task_id": id, "p_patch": { "status": "todo" }, "p_expected_version": 1 }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (StatusCode::CONFLICT, "STALE_VERSION")
+    );
+    let r = t.rpc("update_task", json!({ "p_task_id": id, "p_patch": { "assigned_to": other.id }, "p_expected_version": 2 }), &lead.cookie).await;
+    assert_eq!(r.code(), "VALIDATION_FAILED");
+    // Reopened (completed_at cleared), then the giver changes details and cancels.
+    let r = t.rpc("update_task", json!({ "p_task_id": id, "p_patch": { "status": "in_progress" }, "p_expected_version": 2 }), &member.cookie).await;
+    assert!(r.body["data"]["completed_at"].is_null(), "{}", r.body);
+    let r = t.rpc("update_task", json!({ "p_task_id": id, "p_patch": { "title": "Fix the monthly report", "priority": "low" }, "p_expected_version": 3 }), &lead.cookie).await;
+    assert_eq!(
+        r.body["data"]["title"], "Fix the monthly report",
+        "{}",
+        r.body
+    );
+    let r = t.rpc("update_task", json!({ "p_task_id": id, "p_patch": { "status": "cancelled" }, "p_expected_version": 4 }), &lead.cookie).await;
+    assert_eq!(r.body["data"]["status"], "cancelled", "{}", r.body);
+    let r = t
+        .rpc(
+            "update_task",
+            json!({ "p_task_id": id, "p_patch": { "status": "todo" }, "p_expected_version": 5 }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(r.code(), "VALIDATION_FAILED");
+    // Who can see it.
+    assert_eq!(
+        t.rpc("get_task", json!({ "p_task_id": id }), &other.cookie)
+            .await
+            .code(),
+        "NOT_FOUND"
+    );
+    assert_eq!(
+        t.rpc("get_task", json!({ "p_task_id": id }), &hr.cookie)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let lists = |scope: &'static str, c: String| {
+        let t = &t;
+        async move {
+            let r = t
+                .rpc(
+                    "list_tasks",
+                    json!({ "p_scope": scope, "p_status": "all" }),
+                    &c,
+                )
+                .await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+            r.body["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x["title"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert!(
+        lists("team", lead.cookie.clone())
+            .await
+            .contains(&"Fix the monthly report".to_owned())
+    );
+    assert!(
+        lists("given", lead.cookie.clone())
+            .await
+            .contains(&"Fix the monthly report".to_owned())
+    );
+    assert!(
+        lists("mine", member.cookie.clone())
+            .await
+            .contains(&"My own to-do".to_owned())
+    );
+    assert!(lists("team", other.cookie.clone()).await.is_empty());
+    // HR sees the lead's task, but not their own HR colleague's; the lead cannot see HR's.
+    assert!(
+        lists("team", hr.cookie.clone())
+            .await
+            .contains(&"Plan the week".to_owned())
+    );
+    assert!(
+        !lists("team", hr.cookie.clone())
+            .await
+            .contains(&"Audit".to_owned())
+    );
+    assert!(
+        lists("team", admin.clone())
+            .await
+            .contains(&"Audit".to_owned())
+    );
+    // The picker lists only people the caller may give tasks to.
+    let r = t.rpc("list_task_assignees", json!({}), &lead.cookie).await;
+    let ids: Vec<&str> = r.body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&member.id.as_str()) && ids.contains(&lead.id.as_str()));
+    assert!(!ids.contains(&other.id.as_str()) && !ids.contains(&hr.id.as_str()));
+    let acc = |c: String| {
+        let t = &t;
+        async move { t.rpc("get_work_access", json!({}), &c).await.body["data"].clone() }
+    };
+    let a = acc(lead.cookie.clone()).await;
+    assert_eq!(
+        (
+            a["can_view_team"].clone(),
+            a["leads_teams"].clone(),
+            a["can_assign_others"].clone()
+        ),
+        (json!(true), json!(1), json!(true))
+    );
+    let a = acc(member.cookie.clone()).await;
+    assert_eq!(
+        (a["can_view_team"].clone(), a["can_assign_others"].clone()),
+        (json!(false), json!(false))
+    );
+    assert_eq!(acc(hr.cookie.clone()).await["can_view_team"], true);
+    assert_eq!(
+        t.rpc("list_tasks", json!({ "p_scope": "everyone" }), &lead.cookie)
+            .await
+            .code(),
+        "VALIDATION_FAILED"
+    );
+    assert_eq!(
+        t.rpc(
+            "list_tasks",
+            json!({ "p_employee_id": hr.id }),
+            &lead.cookie
+        )
+        .await
+        .code(),
+        "ACCESS_DENIED"
+    );
+}
+
+#[tokio::test]
+async fn daily_work_reports_are_seen_up_the_line_only() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let (lead, member, other, hr) = t.reporting_lines(&admin).await;
+    let today: String =
+        sqlx::query_scalar("select ((now() at time zone 'Asia/Kolkata')::date)::text")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    let log = |c: String, title: &'static str, minutes: Option<i64>| {
+        let t = &t;
+        let today = today.clone();
+        async move {
+            t.rpc(
+                "save_work_log",
+                json!({ "p_id": null, "p_work_date": today, "p_title": title,
+                "p_details": "Wrote the full details of what was done.", "p_minutes": minutes }),
+                &c,
+            )
+            .await
+        }
+    };
+    let r = log(member.cookie.clone(), "Customer calls", Some(90)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let entry = r.body["data"].clone();
+    assert_eq!(entry["can_edit"], true);
+    log(lead.cookie.clone(), "Team planning", Some(60)).await;
+    log(hr.cookie.clone(), "Payroll checks", None).await;
+    let sees = |viewer: &str, whose: &str| {
+        let t = &t;
+        let (v, w) = (viewer.to_owned(), whose.to_owned());
+        async move {
+            t.rpc("list_work_logs", json!({ "p_employee_id": w }), &v)
+                .await
+                .status
+                == StatusCode::OK
+        }
+    };
+    // Employee -> self, lead, HR, Admin.
+    assert!(sees(&member.cookie, &member.id).await);
+    assert!(sees(&lead.cookie, &member.id).await);
+    assert!(sees(&hr.cookie, &member.id).await);
+    assert!(sees(&admin, &member.id).await);
+    assert!(!sees(&other.cookie, &member.id).await);
+    // Lead -> HR, Admin; not their own team members.
+    assert!(sees(&hr.cookie, &lead.id).await);
+    assert!(sees(&admin, &lead.id).await);
+    assert!(!sees(&member.cookie, &lead.id).await);
+    // HR -> Admin only.
+    assert!(sees(&admin, &hr.id).await);
+    assert!(!sees(&lead.cookie, &hr.id).await);
+    assert!(!sees(&member.cookie, &hr.id).await);
+    // The lead cannot read someone in another team.
+    assert!(!sees(&lead.cookie, &other.id).await);
+
+    // Team view for the day.
+    let names = |c: String| {
+        let t = &t;
+        async move {
+            let r = t.rpc("list_team_work", json!({}), &c).await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+            r.body["data"]["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x["employee"]["id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(names(lead.cookie.clone()).await, vec![member.id.clone()]);
+    let hr_view = names(hr.cookie.clone()).await;
+    assert!(
+        hr_view.contains(&lead.id) && hr_view.contains(&member.id) && hr_view.contains(&other.id)
+    );
+    assert!(!hr_view.contains(&hr.id));
+    assert!(names(admin.clone()).await.contains(&hr.id));
+    assert_eq!(
+        t.rpc("list_team_work", json!({}), &member.cookie)
+            .await
+            .code(),
+        "ACCESS_DENIED"
+    );
+    let r = t.rpc("list_team_work", json!({}), &lead.cookie).await;
+    assert_eq!(r.body["data"]["rows"][0]["total_minutes"], 90);
+
+    // Rules: the last 7 days only, 24 h a day, own tasks only, own entries only.
+    let bad_day = |days: i64| {
+        let t = &t;
+        let c = member.cookie.clone();
+        async move {
+            let d: String = sqlx::query_scalar(
+                "select (((now() at time zone 'Asia/Kolkata')::date) + $1::int)::text",
+            )
+            .bind(days as i32)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+            t.rpc("save_work_log", json!({ "p_id": null, "p_work_date": d, "p_title": "Old", "p_details": "Details here" }), &c).await
+        }
+    };
+    assert_eq!(bad_day(-8).await.code(), "VALIDATION_FAILED");
+    assert_eq!(bad_day(1).await.code(), "VALIDATION_FAILED");
+    assert_eq!(bad_day(-7).await.status, StatusCode::OK);
+    let r = log(member.cookie.clone(), "Too long", Some(1400)).await;
+    assert_eq!(r.code(), "VALIDATION_FAILED", "{}", r.body);
+    let r = t
+        .rpc(
+            "save_work_log",
+            json!({ "p_id": null, "p_work_date": today, "p_title": "x", "p_details": "" }),
+            &member.cookie,
+        )
+        .await;
+    assert!(
+        r.body["error"]["field_errors"]["title"].is_string()
+            && r.body["error"]["field_errors"]["details"].is_string(),
+        "{}",
+        r.body
+    );
+    let leads_task = t
+        .rpc(
+            "create_task",
+            json!({ "p_assigned_to": lead.id, "p_title": "Lead only" }),
+            &hr.cookie,
+        )
+        .await
+        .body["data"]["id"]
+        .clone();
+    let r = t.rpc("save_work_log", json!({ "p_id": null, "p_work_date": today, "p_title": "Sneaky", "p_details": "On someone else's task", "p_task_id": leads_task }), &member.cookie).await;
+    assert!(
+        r.body["error"]["field_errors"]["task_id"].is_string(),
+        "{}",
+        r.body
+    );
+    // Logged against own task: the task shows the time.
+    let mine = t
+        .rpc(
+            "create_task",
+            json!({ "p_assigned_to": member.id, "p_title": "Write docs" }),
+            &lead.cookie,
+        )
+        .await
+        .body["data"]["id"]
+        .clone();
+    t.rpc("save_work_log", json!({ "p_id": null, "p_work_date": today, "p_title": "Docs", "p_details": "Wrote the setup guide", "p_minutes": 30, "p_task_id": mine }), &member.cookie).await;
+    let g = t
+        .rpc("get_task", json!({ "p_task_id": mine }), &lead.cookie)
+        .await;
+    assert_eq!(g.body["data"]["logged_minutes"], 30, "{}", g.body);
+    assert_eq!(g.body["data"]["logs"].as_array().unwrap().len(), 1);
+    // Editing: own entry, right version; others cannot touch it.
+    let id = entry["id"].as_str().unwrap();
+    let r = t.rpc("save_work_log", json!({ "p_id": id, "p_work_date": today, "p_title": "Customer calls (3)", "p_details": "Called three customers about renewals.", "p_minutes": 75, "p_expected_version": 1 }), &member.cookie).await;
+    assert_eq!(r.body["data"]["version"], 2, "{}", r.body);
+    let r = t.rpc("save_work_log", json!({ "p_id": id, "p_work_date": today, "p_title": "Again", "p_details": "Stale edit here", "p_expected_version": 1 }), &member.cookie).await;
+    assert_eq!(r.code(), "STALE_VERSION");
+    assert_eq!(
+        t.rpc("delete_work_log", json!({ "p_id": id }), &lead.cookie)
+            .await
+            .code(),
+        "NOT_FOUND"
+    );
+    assert_eq!(
+        t.rpc("delete_work_log", json!({ "p_id": id }), &member.cookie)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        t.rpc(
+            "list_work_logs",
+            json!({ "p_from": "2026-01-01", "p_to": "2026-06-01" }),
+            &member.cookie
+        )
+        .await
+        .code(),
+        "VALIDATION_FAILED"
+    );
+}

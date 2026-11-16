@@ -34,6 +34,8 @@ export function actionScopes(c: Caps): { scope: Scope; label: string; art: strin
     { label: "My salary", subtitle: "Monthly salary, bank and total received", href: "/salary", art: "tile_my_salary", tile: peach },
     { label: "Payslips", subtitle: "Download your monthly payslips", href: "/payslips", art: "tile_payslips", tile: peach },
     { label: "My requests", subtitle: "Track everything you sent", href: "/requests", art: "tile_my_requests", tile: teal },
+    { label: "My tasks", subtitle: "Work given to you, and your own to-dos", href: "/tasks", art: "task_alt", tile: teal },
+    { label: "Daily work report", subtitle: "Write what you did today, with details", href: "/work", art: "edit_note", tile: teal },
   ];
   const hr: ActionItem[] = [];
   if (c.canDraftPolicy) hr.push({ label: "Leave & holidays", subtitle: "Leave types, balances and holidays", href: "/admin/leave-policies", art: "beach", tile: cyan });
@@ -43,6 +45,8 @@ export function actionScopes(c: Caps): { scope: Scope; label: string; art: strin
   if (c.canManagePayroll) hr.push({ label: "Payroll uploads", subtitle: "Publish payslips and paid amounts", href: "/payroll/uploads", art: "tile_payslips", tile: peach });
   if (c.canViewEmployees) hr.push({ label: "Employees", subtitle: "Directory and employee records", href: "/employees", art: "groups", tile: pink });
   if (c.isHrOrAdmin) {
+    hr.push({ label: "Team work reports", subtitle: "What everyone did, day by day", href: "/work?tab=team", art: "fact_check", tile: teal });
+    hr.push({ label: "Give a task", subtitle: "Assign work with a due date", href: "/tasks/new", art: "assignment", tile: teal });
     hr.push({ label: "Outside work", subtitle: "Send people out: client, site, event", href: "/admin/outside-work", art: "alt_route", tile: lav });
     hr.push({ label: "Working from home", subtitle: "Approved work from home days", href: "/admin/outside-work?kind=wfh", art: "home", tile: lav });
   }
