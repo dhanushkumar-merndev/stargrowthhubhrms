@@ -3,9 +3,8 @@
 -- * Employee IDs are generated when HR leaves the field out: EMP0001 for
 --   employees, HR0001 for HR, ADM0001 for Admins. Numbers never go back down
 --   and a typed ID (import, bootstrap) still works.
--- * Everyone who becomes active gets a machine PIN automatically (unless they
---   already have one, e.g. a PIN claimed from the machine at hire), and is
---   queued to every machine that has commands on.
+-- * Machine PINs are already automatic (hrms.device_employee_changed in
+--   20261113100000_web_device_bridge.sql); the API tests now cover it.
 -- * "Fetch people from machines": a new read-only machine command
 --   (DATA QUERY USERINFO) plus an oplog rewind so the machine uploads its whole
 --   user list; the people then show under "New from machine".
@@ -164,56 +163,6 @@ begin
     'provisioning_state', v_emp.provisioning_state, 'auth_user_id', null, 'resumed', false);
 end;
 $$;
-
--- ------------------------------------------------------------- machine PINs
-
--- Gives an employee the next free PIN (any machine) unless they have one.
--- Returns the PIN, or null when they already had one.
-create or replace function hrms.auto_assign_device_pin(p_org uuid, p_employee uuid, p_actor uuid) returns text
-language plpgsql security definer set search_path = '' as $$
-declare
-  v_pin text;
-  v_link uuid;
-begin
-  perform hrms.device_lock_org(p_org);
-  if exists (select 1 from hrms.device_user_links where org_id = p_org and employee_id = p_employee and unlinked_at is null) then
-    return null;
-  end if;
-  -- Never reuse a number that a machine or an old link has used.
-  select (coalesce(max(pin::bigint), 0) + 1)::text into v_pin
-  from (
-    select pin from hrms.device_user_links where org_id = p_org
-    union all select pin from hrms.device_users where org_id = p_org
-    union all select pin from hrms.device_punch_events where org_id = p_org
-  ) s
-  where pin ~ '^[0-9]{1,9}$';
-  if v_pin::bigint > 999999999 then
-    return null;
-  end if;
-  insert into hrms.device_user_links (org_id, serial, pin, employee_id, linked_by)
-  values (p_org, null, v_pin, p_employee, p_actor)
-  returning id into v_link;
-  perform hrms.audit(p_org, p_actor, 'device_user.link', 'device_user_link', v_link,
-    jsonb_build_object('pin', v_pin, 'serial', null, 'employee_id', p_employee, 'assigned', true, 'automatic', true),
-    'business', p_employee);
-  perform hrms.device_sync_employee(p_org, p_employee, 'assign_pin', p_actor);
-  return v_pin;
-end;
-$$;
-revoke all on function hrms.auto_assign_device_pin(uuid, uuid, uuid) from public, anon, authenticated;
-
-create or replace function hrms.employees_auto_pin() returns trigger
-language plpgsql security definer set search_path = '' as $$
-begin
-  if new.status = 'active' and old.status is distinct from 'active' then
-    perform hrms.auto_assign_device_pin(new.org_id, new.id, coalesce(new.updated_by, new.created_by));
-  end if;
-  return new;
-end;
-$$;
-drop trigger if exists employees_auto_pin on hrms.employees;
-create trigger employees_auto_pin after update of status on hrms.employees
-  for each row execute function hrms.employees_auto_pin();
 
 -- ------------------------------------------------ fetch people from machines
 
