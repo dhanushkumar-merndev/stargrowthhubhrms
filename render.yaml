@@ -7,7 +7,7 @@ services:
     plan: free
     region: singapore # closest free region to India
     image:
-      url: ghcr.io/OWNER/web-hrms-server:latest # replace OWNER with your GitHub user
+      url: ghcr.io/dhanushkumar-merndev/web-hrms-server:latest
     healthCheckPath: /healthz
     autoDeploy: false # deployed by the deploy hook in .github/workflows/server-image.yml
     envVars:
