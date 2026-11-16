@@ -68,20 +68,27 @@ export function Home({ now = new Date() }: { now?: Date }) {
         )}
 
         {/* The person's day */}
-        <section aria-label="Today" className="flex items-center gap-3 overflow-hidden rounded-card bg-attendance-card p-card md:col-span-2 lg:col-span-1">
-          <div className="min-w-0 flex-1">
-            <p className="text-title-sm font-semibold">{context?.employee.designation || roleLabel(caps.isAdmin ? "admin" : caps.isHr ? "hr" : "employee")}</p>
-            <p className="text-body-md text-text-secondary">
-              {context?.employee.code} · {context?.org.name}
-            </p>
-            <p className="mt-2 text-body-md" aria-live="polite">
-              {!d ? " " : todayLine(d, tz)}
-            </p>
-            <Link href="/attendance/today" className="mt-3 inline-flex min-h-12 items-center rounded-full bg-attendance-action px-[22px] text-[17px] font-semibold text-white">
-              My punch
-            </Link>
+        <section aria-label="Today" className="flex flex-col overflow-hidden rounded-card bg-attendance-card md:col-span-2 lg:col-span-1">
+          <div className="h-[72px] w-full overflow-hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element -- SVG illustration banner */}
+            <img src={`/illustrations/${g.art}.svg`} alt="" className="h-full w-full object-cover" draggable={false} />
           </div>
-          <Art name={g.art} size={96} big />
+          <div className="flex flex-1 flex-col justify-between p-card">
+            <div>
+              <p className="text-title-sm font-semibold">{context?.employee.designation || roleLabel(caps.isAdmin ? "admin" : caps.isHr ? "hr" : "employee")}</p>
+              <p className="text-body-md text-text-secondary">
+                {context?.employee.code} · {context?.org.name}
+              </p>
+              <p className="mt-2 text-body-md" aria-live="polite">
+                {!d ? " " : todayLine(d, tz)}
+              </p>
+            </div>
+            <div className="mt-4">
+              <Link href="/attendance/today" className="inline-flex min-h-12 items-center rounded-full bg-attendance-action px-[22px] text-[17px] font-semibold text-white">
+                My punch
+              </Link>
+            </div>
+          </div>
         </section>
 
         {dash.error ? (
