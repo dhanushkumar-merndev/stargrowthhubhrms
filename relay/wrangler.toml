@@ -9,6 +9,6 @@ workers_dev = true
 preview_urls = false
 
 [vars]
-API_ORIGIN = "https://web-hrms-api.onrender.com"
+API_ORIGIN = "https://stargrowthhubhrms-api.onrender.com"
 
 # Secret (not here): npx wrangler secret put DEVICE_RELAY_SECRET   (same value as on Render)
