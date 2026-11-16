@@ -106,48 +106,52 @@ select test.eq((select wifi_ssids from hrms.offices where id = pg_temp.o1()), '{
 create or replace function pg_temp.mon() returns date language sql as $$
   select current_date + ((7 - extract(isodow from current_date)::integer) + 1) + 7;
 $$;
+-- A Monday 7-13 days ago: always strictly in the past, even when run on a Monday.
+create or replace function pg_temp.past() returns date language sql as $$
+  select current_date - extract(isodow from current_date)::integer - 6;
+$$;
 create or replace function pg_temp.row(p_code text, p_day date) returns hrms.attendance_row language sql security definer as $$
   select r from hrms.attendance_rows(test.org('TEST_ORG'), array[test.emp(p_code)], p_day, p_day, now()) r;
 $$;
-select hrms.ensure_schedule_instances(test.org('TEST_ORG'), array[test.emp('EMP02')], pg_temp.mon() - 14, pg_temp.mon());
-select test.eq((pg_temp.row('EMP02', pg_temp.mon() - 14)).status, 'absent', 'OUT-001 past workday without punches is absent');
+select hrms.ensure_schedule_instances(test.org('TEST_ORG'), array[test.emp('EMP02')], pg_temp.past(), pg_temp.mon());
+select test.eq((pg_temp.row('EMP02', pg_temp.past())).status, 'absent', 'OUT-001 past workday without punches is absent');
 
 select test.login('EMP01');
 select test.throws(format('select public.grant_outside_work(array[%L]::uuid[], %L, %L, ''Client visit'')',
-  test.emp('EMP02'), pg_temp.mon() - 14, pg_temp.mon()), 'ACCESS_DENIED', 'OUT-002 only HR or Admin grants outside work');
+  test.emp('EMP02'), pg_temp.past(), pg_temp.mon()), 'ACCESS_DENIED', 'OUT-002 only HR or Admin grants outside work');
 select test.login('ADMIN01');
 select test.throws(format('select public.grant_outside_work(array[%L]::uuid[], %L, %L, ''x'')',
   test.emp('EMP02'), pg_temp.mon() - 60, pg_temp.mon()), 'VALIDATION_FAILED', 'OUT-002 at most 31 days');
-create temporary table g1 as select public.grant_outside_work(array[test.emp('EMP02')], pg_temp.mon() - 14,
-  pg_temp.mon() - 14, 'Client visit') as res;
+create temporary table g1 as select public.grant_outside_work(array[test.emp('EMP02')], pg_temp.past(),
+  pg_temp.past(), 'Client visit') as res;
 select public.grant_outside_work(array[test.emp('EMP02')], pg_temp.mon(), pg_temp.mon(), 'Site survey');
 select test.eq((select (res -> 'data' ->> 'days_added')::integer from g1), 1, 'OUT-003 one day granted');
-select test.eq((select (public.grant_outside_work(array[test.emp('EMP02')], pg_temp.mon() - 14, pg_temp.mon() - 14,
+select test.eq((select (public.grant_outside_work(array[test.emp('EMP02')], pg_temp.past(), pg_temp.past(),
   'again') -> 'data' ->> 'days_added')::integer), 0, 'OUT-003 granting again adds nothing');
 
 select test.as_admin_db();
-select test.eq((pg_temp.row('EMP02', pg_temp.mon() - 14)).status, 'present', 'OUT-004 granted day counts as present');
-select test.eq((pg_temp.row('EMP02', pg_temp.mon() - 14)).effective_source, 'outside', 'OUT-004 marked as outside work');
-select test.eq(((pg_temp.row('EMP02', pg_temp.mon() - 14)).calc).credited_seconds,
-  ((pg_temp.row('EMP02', pg_temp.mon() - 14)).calc).required_seconds, 'OUT-004 full shift credited');
-select test.eq(((pg_temp.row('EMP02', pg_temp.mon() - 14)).calc).shortfall_seconds, 0, 'OUT-004 no shortfall');
-select test.eq(hrms.attendance_row_json(pg_temp.row('EMP02', pg_temp.mon() - 14)) ->> 'outside_reason', 'Client visit',
+select test.eq((pg_temp.row('EMP02', pg_temp.past())).status, 'present', 'OUT-004 granted day counts as present');
+select test.eq((pg_temp.row('EMP02', pg_temp.past())).effective_source, 'outside', 'OUT-004 marked as outside work');
+select test.eq(((pg_temp.row('EMP02', pg_temp.past())).calc).credited_seconds,
+  ((pg_temp.row('EMP02', pg_temp.past())).calc).required_seconds, 'OUT-004 full shift credited');
+select test.eq(((pg_temp.row('EMP02', pg_temp.past())).calc).shortfall_seconds, 0, 'OUT-004 no shortfall');
+select test.eq(hrms.attendance_row_json(pg_temp.row('EMP02', pg_temp.past())) ->> 'outside_reason', 'Client visit',
   'OUT-004 reason shown on the day');
-select test.eq(hrms.attendance_row_json(pg_temp.row('EMP01', pg_temp.mon() - 14)) ->> 'outside_reason', null::text,
+select test.eq(hrms.attendance_row_json(pg_temp.row('EMP01', pg_temp.past())) ->> 'outside_reason', null::text,
   'OUT-004 no reason on normal days');
 select test.eq((pg_temp.row('EMP02', pg_temp.mon())).effective_source, 'outside', 'OUT-004 future day pre-approved');
 select test.eq((pg_temp.row('EMP02', pg_temp.mon())).status, 'upcoming', 'OUT-004 future day not counted as present yet');
-select test.eq((pg_temp.row('EMP01', pg_temp.mon() - 14)).effective_source, null::text, 'OUT-004 others unaffected');
+select test.eq((pg_temp.row('EMP01', pg_temp.past())).effective_source, null::text, 'OUT-004 others unaffected');
 
 select test.login('ADMIN01');
-create temporary table l1 as select public.list_outside_work(pg_temp.mon() - 20) as res;
+create temporary table l1 as select public.list_outside_work(pg_temp.past()) as res;
 select test.eq((select jsonb_array_length(res -> 'data') from l1), 2, 'OUT-005 Admin lists active grants');
 select test.throws(format('select public.revoke_outside_work(%L, null)', (select res -> 'data' -> 0 ->> 'id' from l1)),
   'VALIDATION_FAILED', 'OUT-006 revoking needs a reason');
 select public.revoke_outside_work((g ->> 'id')::uuid, 'Visit cancelled')
-from l1, jsonb_array_elements(res -> 'data') g where (g ->> 'work_date')::date = pg_temp.mon() - 14;
+from l1, jsonb_array_elements(res -> 'data') g where (g ->> 'work_date')::date = pg_temp.past();
 select test.as_admin_db();
-select test.eq((pg_temp.row('EMP02', pg_temp.mon() - 14)).status, 'absent', 'OUT-006 revoked day no longer credited');
+select test.eq((pg_temp.row('EMP02', pg_temp.past())).status, 'absent', 'OUT-006 revoked day no longer credited');
 select test.eq((select count(*)::integer from hrms.notifications where kind = 'attendance.outside_work'
                 and recipient_id = test.emp('EMP02')), 2, 'OUT-003 employee notified per grant');
 
