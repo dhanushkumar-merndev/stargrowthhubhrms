@@ -95,8 +95,9 @@ describe("Home dashboard", () => {
       "/rpc/get_session_context": () => ok(ctx("employee")),
       "/rpc/get_dashboard": () => ok(dash()),
     });
-    wrap(<Home now={new Date(2026, 10, 16, 11, 0)} />);
-    expect(await screen.findByText("Punched in at 9:05 am")).toBeInTheDocument();
+    wrap(<Home now={new Date("2026-11-16T05:30:00Z")} />);
+    expect(await screen.findByText("Punched in at 9:05 am · 1 h 55 m so far")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Today" })).getByRole("link", { name: "Punch out" })).toHaveAttribute("href", "/attendance/today");
     const month = screen.getByRole("heading", { name: "This month" }).parentElement!;
     expect(within(month).getByText("12")).toBeInTheDocument(); // 10 machine + 2 outdoor
     expect(within(month).getByText("80 h")).toBeInTheDocument();
@@ -105,6 +106,7 @@ describe("Home dashboard", () => {
     expect(screen.getAllByText(/no punch$/, { selector: "li" })).toHaveLength(3);
     expect(screen.queryByText("Everyone today")).not.toBeInTheDocument();
     expect(screen.queryByText("My team today")).not.toBeInTheDocument();
+    expect(screen.queryByText("Team today")).not.toBeInTheDocument();
     const quick = screen.getByRole("region", { name: "Quick actions" });
     expect(within(quick).getAllByRole("link").map((a) => a.getAttribute("href"))).toContain("/attendance/today");
   });
@@ -124,17 +126,21 @@ describe("Home dashboard", () => {
           }),
         ),
     });
-    wrap(<Home now={new Date(2026, 10, 16, 11, 0)} />);
+    wrap(<Home now={new Date("2026-11-16T05:30:00Z")} />);
     expect(await screen.findByText("Everyone today")).toBeInTheDocument();
     expect(screen.getByText("80%")).toBeInTheDocument(); // (14 + 2) / 20
-    expect(screen.getByRole("img", { name: "In 14, Outdoor 2, On leave 1, Not in 3" })).toBeInTheDocument();
+    const who = screen.getByRole("link", { name: /Team today/ });
+    expect(who).toHaveAttribute("href", "/devices");
+    expect(within(who).getByRole("img", { name: "16 of 20 teammates have arrived" })).toBeInTheDocument();
+    expect(within(who).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["14In", "2Outdoor", "3Not in yet", "1On leave"]);
+    expect(screen.getByRole("img", { name: "In 3, Outdoor 0, On leave 0, Not in 2" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Requests to review\s*3/ })).toHaveAttribute("href", "/approvals");
     expect(screen.getByRole("link", { name: /Punch fix requests\s*2/ })).toHaveAttribute("href", "/attendance/fixes");
     expect(screen.getByText("My team today")).toBeInTheDocument();
     expect(screen.getByText("2/5")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Share of people present on each of the last 7 days" })).toBeInTheDocument();
-    const quick = screen.getByRole("region", { name: "Quick actions" });
-    expect(within(quick).getAllByRole("link").map((a) => a.getAttribute("href"))).toContain("/approvals");
+    const used = screen.getByRole("region", { name: "Most used" });
+    expect(within(used).getAllByRole("link").map((a) => a.getAttribute("href"))).toContain("/approvals");
   });
 
   it("an outdoor day and a missing dashboard are handled", async () => {
@@ -142,8 +148,41 @@ describe("Home dashboard", () => {
       "/rpc/get_session_context": () => ok(ctx("employee")),
       "/rpc/get_dashboard": () => ok(dash({ me: { ...dash().me, today: { first_in_at: null, out_at: null, out_source: null, worked_minutes: null, outdoor: "counted" } } })),
     });
-    wrap(<Home now={new Date(2026, 10, 16, 11, 0)} />);
-    expect(await screen.findByText("Outdoor work today")).toBeInTheDocument();
+    wrap(<Home now={new Date("2026-11-16T05:30:00Z")} />);
+    expect(await screen.findByText("Outdoor work today. No punch-in needed.")).toBeInTheDocument();
+  });
+
+  it("without a machine it follows the phone shift: check in, exceptions, approvals, payslip and holidays", async () => {
+    const summary = {
+      today: "2026-11-16",
+      org: { name: "Acme", timezone: "Asia/Kolkata" },
+      shift: { shift_date: "2026-11-16", kind: "workday", is_required: true, start_at: "2026-11-16T04:30:00Z", end_at: "2026-11-16T13:30:00Z", next_action: "IN", blocked_reason: null, session_state: null },
+      team: { on_time: 4, late: 1, not_yet_in: 2, out_of_office: 1, total: 8 },
+      upcoming_holidays: [{ date: "2026-12-25", name: "Christmas" }, { date: "2027-01-01", name: "New Year" }],
+      extras: { admin_tasks: [], latest_payslip: { salary_month: "2026-10-01" } },
+      exception_days: 2,
+      pending_reviews: 3,
+      unassigned_reviews: 1,
+    };
+    mockFetch({
+      "/rpc/get_session_context": () => ok(ctx("hr")),
+      "/rpc/get_dashboard": () => ok(dash({ has_machines: false })),
+      "/rpc/get_home_summary": () => ok(summary),
+    });
+    wrap(<Home now={new Date("2026-11-16T05:30:00Z")} />);
+    const today = await screen.findByRole("region", { name: "Today" });
+    expect(await within(today).findByRole("link", { name: "Check in" })).toHaveAttribute("href", "/punch");
+    expect(within(today).getByText("Monday")).toBeInTheDocument();
+    expect(within(today).getByText("Office shift")).toBeInTheDocument();
+    expect(within(today).getByText("16 November 2026")).toBeInTheDocument();
+    expect(within(today).getByText("10:00 am–7:00 pm")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /02 Exception days/ })).toHaveAttribute("href", "/attendance?filter=needs_correction");
+    expect(screen.getByRole("link", { name: /3 requests waiting for you.*1 need an approver assigned/ })).toHaveAttribute("href", "/approvals");
+    const who = screen.getByRole("link", { name: /Team today/ });
+    expect(who).toHaveAttribute("href", "/reports/hours");
+    expect(within(who).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["4On time", "1Late", "2Not in yet", "1Away"]);
+    expect(screen.getByRole("link", { name: /Payslips.*Oct 2026 is ready/ })).toHaveAttribute("href", "/payslips");
+    expect(screen.getByRole("link", { name: /Upcoming holidays.*Christmas · 25 Dec · \+1 more/ })).toHaveAttribute("href", "/holidays");
   });
 });
 

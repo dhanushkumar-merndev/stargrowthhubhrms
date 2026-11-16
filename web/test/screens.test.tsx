@@ -7,7 +7,7 @@ import { Gate } from "@/components/gate";
 import { NavBar } from "@/components/nav-bar";
 import { Action } from "@/components/screens/action";
 import { Explore } from "@/components/screens/explore";
-import { Home, firstName, greeting } from "@/components/screens/home";
+import { Home, dayPhase, firstName, orgClock } from "@/components/screens/home";
 import { LoginForm } from "@/components/screens/login-form";
 import { PasswordForm } from "@/components/screens/password-form";
 import { Settings, deviceName } from "@/components/screens/settings";
@@ -260,21 +260,26 @@ describe("tabs", () => {
     expect(screen.queryByRole("link", { name: /Organization/ })).toBeNull();
   });
 
-  it("Home greets by first name and time of day", async () => {
+  it("Home greets by first name and shows the office clock", async () => {
     mockFetch({ "/rpc/get_session_context": () => ok(ctx("employee")) });
-    wrap(<Home now={new Date(2026, 10, 14, 9, 0)} />);
-    expect(await screen.findByText("Asha")).toBeInTheDocument();
-    expect(screen.getByText("Good morning,")).toBeInTheDocument();
+    wrap(<Home now={new Date("2026-11-14T03:30:00Z")} />);
+    expect(await screen.findByRole("heading", { name: "Hello Asha 👋" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "My profile" })).toHaveTextContent("AR");
-    expect(within(screen.getByRole("region", { name: "Today" })).getByRole("link", { name: "My punch" })).toHaveAttribute("href", "/attendance/today");
+    expect(within(screen.getByRole("region", { name: "Today" })).getByRole("img", { name: "Office time 9:00 AM, morning" })).toBeInTheDocument();
+    const quick = screen.getByRole("region", { name: "Quick actions" });
+    expect(within(quick).getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/leave/apply", "/attendance/today", "/attendance", "/requests"]);
   });
 });
 
 describe("greeting / names", () => {
   it.each([
-    [0, "Good evening"], [4, "Good evening"], [5, "Good morning"], [11, "Good morning"],
-    [12, "Good afternoon"], [16, "Good afternoon"], [17, "Good evening"], [23, "Good evening"],
-  ])("%i h -> %s", (h, t) => expect(greeting(h).text).toBe(t));
+    [0, "night"], [5 * 60 + 59, "night"], [6 * 60, "morning"], [11 * 60 + 59, "morning"],
+    [12 * 60, "afternoon"], [16 * 60 + 59, "afternoon"], [17 * 60, "sunset"], [19 * 60 + 29, "sunset"], [19 * 60 + 30, "night"],
+  ])("%i min -> %s", (m, phase) => expect(dayPhase(m)).toBe(phase));
+  it("the clock is in the office time zone", () => {
+    expect(orgClock(new Date("2026-11-16T16:37:00Z"), "Asia/Kolkata")).toEqual({ time: "10:07", period: "PM", minutes: 22 * 60 + 7, weekday: "Monday", date: "16 November 2026" });
+    expect(orgClock(new Date("2026-11-16T18:35:00Z"), "Asia/Kolkata").minutes).toBe(5);
+  });
   it("first name handles spaces and empties", () => {
     expect(firstName("  Asha   Rao ")).toBe("Asha");
     expect(firstName("")).toBe("");
