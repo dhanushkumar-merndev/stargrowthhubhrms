@@ -4620,3 +4620,400 @@ async fn daily_work_reports_are_seen_up_the_line_only() {
         "VALIDATION_FAILED"
     );
 }
+
+// ------------------------------------------------------------ punch flow
+
+impl T {
+    async fn notified(&self, who: &str, kind: &str) -> i64 {
+        sqlx::query_scalar(
+            "select count(*) from hrms.notifications where recipient_id = $1::uuid and kind = $2",
+        )
+        .bind(who)
+        .bind(kind)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+}
+
+fn hhmm(minus_minutes: i64) -> String {
+    local_now(minus_minutes)[11..16].to_owned()
+}
+
+#[tokio::test]
+async fn machine_punch_in_then_app_punch_out_and_fix_requests() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let (_lead, member, _other, hr) = t.reporting_lines(&admin).await;
+    let sn = t.machine(&admin, json!({})).await;
+    let pin = t.pins_of(&member.id).await[0].1.clone();
+
+    let day = t.rpc("get_my_punch_day", json!({}), &member.cookie).await;
+    assert_eq!(day.status, StatusCode::OK, "{}", day.body);
+    assert_eq!(day.body["data"]["has_machines"], true);
+    assert_eq!(day.body["data"]["day"], Value::Null);
+    assert_eq!(day.body["data"]["can_outdoor_in"], true);
+    assert_eq!(day.body["data"]["can_app_out"], false);
+
+    // Punch in at the machine: the person is told at once.
+    let path = format!("/iclock/cdata?SN={sn}&table=ATTLOG&Stamp=1");
+    let r = t
+        .dpost(&path, &format!("{pin}\t{}\t0\t1\t0\t0\t0\n", local_now(90)))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert_eq!(t.notified(&member.id, "attendance.device_in").await, 1);
+    let day = t.rpc("get_my_punch_day", json!({}), &member.cookie).await;
+    let d = &day.body["data"];
+    assert!(d["day"]["first_in_at"].is_string(), "{d}");
+    assert_eq!(d["day"]["machine"], "Front door");
+    assert_eq!(
+        (
+            d["can_app_out"].clone(),
+            d["can_outdoor_in"].clone(),
+            d["can_request_fix"].clone()
+        ),
+        (json!(true), json!(false), json!(true))
+    );
+
+    // No outdoor punch-in once in at the machine.
+    let r = t
+        .rpc(
+            "outdoor_punch_in",
+            json!({ "p_reason": "Client visit", "p_photo_file_version_id": Uuid::new_v4() }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+
+    // App punch-out: not before the punch-in, an earlier time needs a reason.
+    let r = t
+        .rpc(
+            "app_punch_out",
+            json!({ "p_out_time": hhmm(120), "p_reason": "left" }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(
+        r.body["error"]["field_errors"]["out_time"], "before_in",
+        "{}",
+        r.body
+    );
+    let r = t
+        .rpc(
+            "app_punch_out",
+            json!({ "p_out_time": hhmm(40) }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(
+        r.body["error"]["field_errors"]["reason"], "required",
+        "{}",
+        r.body
+    );
+    let r = t
+        .rpc(
+            "app_punch_out",
+            json!({ "p_date": "2020-01-01" }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(
+        r.body["error"]["field_errors"]["date"], "too_old",
+        "{}",
+        r.body
+    );
+    let r = t.rpc("app_punch_out", json!({}), &member.cookie).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = t.rpc("app_punch_out", json!({}), &member.cookie).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    let day = t.rpc("get_my_punch_day", json!({}), &member.cookie).await;
+    assert_eq!(day.body["data"]["day"]["out_source"], "app");
+    assert!(day.body["data"]["day"]["worked_minutes"].as_i64().unwrap() >= 89);
+    assert_eq!(day.body["data"]["can_app_out"], false);
+    let board = t.rpc("list_attendance_day", json!({}), &hr.cookie).await;
+    let row = board.body["data"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["employee"]["id"] == json!(member.id))
+        .unwrap()
+        .clone();
+    assert_eq!(row["status"], "app_checkout", "{row}");
+    // A punch-out at the machine later still wins.
+    let r = t
+        .dpost(&path, &format!("{pin}\t{}\t1\t1\t0\t0\t0\n", local_now(0)))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let day = t.rpc("get_my_punch_day", json!({}), &member.cookie).await;
+    assert_eq!(day.body["data"]["day"]["out_source"], "device");
+
+    // Wrong time: ask HR to fix it.
+    let ask = |inn: Value, reason: &'static str| {
+        let (t, c) = (&t, member.cookie.clone());
+        async move {
+            t.rpc(
+                "request_punch_fix",
+                json!({ "p_date": null, "p_in_time": inn, "p_out_time": null, "p_reason": reason }),
+                &c,
+            )
+            .await
+        }
+    };
+    assert_eq!(
+        ask(json!(null), "machine was slow").await.body["error"]["field_errors"]["in_time"],
+        "required"
+    );
+    assert_eq!(
+        ask(json!("25:99"), "machine was slow").await.body["error"]["field_errors"]["in_time"],
+        "invalid"
+    );
+    let fix = ask(json!(hhmm(100)), "Machine queue at the door").await;
+    assert_eq!(fix.status, StatusCode::OK, "{}", fix.body);
+    assert_eq!(
+        ask(json!(hhmm(100)), "Machine queue again").await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(t.notified(&hr.id, "attendance.fix_requested").await, 1);
+    let id = fix.body["data"]["id"].as_str().unwrap().to_owned();
+    let mine = t.rpc("list_punch_fixes", json!({}), &member.cookie).await;
+    assert_eq!(mine.body["data"][0]["can_withdraw"], true);
+    assert_eq!(mine.body["data"][0]["can_review"], false);
+    let r = t
+        .rpc(
+            "review_punch_fix",
+            json!({ "p_id": id, "p_approve": true }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let r = t
+        .rpc(
+            "review_punch_fix",
+            json!({ "p_id": id, "p_approve": false }),
+            &hr.cookie,
+        )
+        .await;
+    assert_eq!(r.body["error"]["field_errors"]["note"], "required");
+    let before = t
+        .rpc("get_my_punch_day", json!({}), &member.cookie)
+        .await
+        .body["data"]["day"]["worked_minutes"]
+        .as_i64()
+        .unwrap();
+    let r = t
+        .rpc(
+            "review_punch_fix",
+            json!({ "p_id": id, "p_approve": true }),
+            &hr.cookie,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["data"]["status"], "approved");
+    let day = t.rpc("get_my_punch_day", json!({}), &member.cookie).await;
+    assert_eq!(day.body["data"]["day"]["in_corrected"], true);
+    assert!(
+        day.body["data"]["day"]["worked_minutes"].as_i64().unwrap() > before,
+        "{}",
+        day.body
+    );
+    assert_eq!(t.notified(&member.id, "attendance.fix_approved").await, 1);
+    let r = t
+        .rpc(
+            "review_punch_fix",
+            json!({ "p_id": id, "p_approve": true }),
+            &hr.cookie,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+}
+
+fn tiny_jpeg() -> Vec<u8> {
+    let mut b = vec![
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08,
+    ];
+    b.extend(480u16.to_be_bytes());
+    b.extend(640u16.to_be_bytes());
+    b.extend([3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    b
+}
+
+#[tokio::test]
+async fn outdoor_punch_in_with_a_photo_counts_and_the_leader_can_reject_it() {
+    let (store, _dir) = temp_store();
+    let Some(t) = setup_with(Some(store)).await else {
+        return;
+    };
+    let admin = t.admin().await;
+    let (lead, member, other, hr) = t.reporting_lines(&admin).await;
+    let photo = t
+        .upload(
+            Some(&member.cookie),
+            "class=correction_attachment&filename=site.jpg",
+            "image/jpeg",
+            tiny_jpeg(),
+        )
+        .await;
+    assert_eq!(photo.status, StatusCode::CREATED, "{}", photo.body);
+    let ver = photo.body["data"]["file_version_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let r = t
+        .rpc(
+            "outdoor_punch_in",
+            json!({ "p_reason": "x", "p_photo_file_version_id": null }),
+            &member.cookie,
+        )
+        .await;
+    assert!(
+        r.body["error"]["field_errors"]["reason"].is_string(),
+        "{}",
+        r.body
+    );
+    assert_eq!(
+        r.body["error"]["field_errors"]["photo"],
+        "Take a photo as proof"
+    );
+    // Someone else's photo is refused.
+    let r = t
+        .rpc(
+            "outdoor_punch_in",
+            json!({ "p_reason": "Client visit at Anna Nagar", "p_photo_file_version_id": ver }),
+            &other.cookie,
+        )
+        .await;
+    assert_eq!(
+        r.body["error"]["field_errors"]["photo"], "Take the photo again",
+        "{}",
+        r.body
+    );
+    let r = t
+        .rpc(
+            "outdoor_punch_in",
+            json!({ "p_reason": "Client visit at Anna Nagar", "p_photo_file_version_id": ver,
+        "p_latitude": 13.08, "p_longitude": 80.27 }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["data"]["status"], "counted");
+    let id = r.body["data"]["id"].as_str().unwrap().to_owned();
+    let r = t
+        .rpc(
+            "outdoor_punch_in",
+            json!({ "p_reason": "Client visit again", "p_photo_file_version_id": ver }),
+            &member.cookie,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+
+    let day = t.rpc("get_my_punch_day", json!({}), &member.cookie).await;
+    assert_eq!(
+        day.body["data"]["outdoor"]["status"], "counted",
+        "{}",
+        day.body
+    );
+    assert_eq!(
+        (
+            day.body["data"]["can_outdoor_in"].clone(),
+            day.body["data"]["can_app_out"].clone()
+        ),
+        (json!(false), json!(true))
+    );
+
+    // The leader and HR are told and can see it (and the photo); others cannot.
+    assert_eq!(t.notified(&lead.id, "attendance.outdoor_in").await, 1);
+    assert_eq!(t.notified(&hr.id, "attendance.outdoor_in").await, 1);
+    assert_eq!(t.notified(&other.id, "attendance.outdoor_in").await, 0);
+    let l = t.rpc("list_outdoor_punches", json!({}), &lead.cookie).await;
+    assert_eq!(
+        l.body["data"]["rows"].as_array().unwrap().len(),
+        1,
+        "{}",
+        l.body
+    );
+    assert_eq!(l.body["data"]["rows"][0]["can_reject"], true);
+    let o = t
+        .rpc("list_outdoor_punches", json!({}), &other.cookie)
+        .await;
+    assert_eq!(o.body["data"]["rows"], json!([]));
+    let (s, _, _) = t
+        .fetch(&lead.cookie, &format!("/v1/files/{ver}?purpose=review"))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = t
+        .fetch(&other.cookie, &format!("/v1/files/{ver}?purpose=review"))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // Punch out from the app, then the leader rejects it.
+    let r = t.rpc("app_punch_out", json!({}), &member.cookie).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let rej = |c: String, reason: &'static str| {
+        let (t, id) = (&t, id.clone());
+        async move {
+            t.rpc(
+                "reject_outdoor_punch",
+                json!({ "p_id": id, "p_reason": reason }),
+                &c,
+            )
+            .await
+        }
+    };
+    assert_eq!(
+        rej(other.cookie.clone(), "No").await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        rej(member.cookie.clone(), "No").await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        rej(lead.cookie.clone(), "").await.body["error"]["field_errors"]["reason"],
+        "required"
+    );
+    let r = rej(lead.cookie.clone(), "Not on the visit plan").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["data"]["status"], "rejected");
+    assert_eq!(
+        rej(hr.cookie.clone(), "Again").await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        t.notified(&member.id, "attendance.outdoor_rejected").await,
+        1
+    );
+    let day = t.rpc("get_my_punch_day", json!({}), &member.cookie).await;
+    assert_eq!(day.body["data"]["outdoor"]["status"], "rejected");
+    assert_eq!(
+        day.body["data"]["outdoor"]["reject_reason"],
+        "Not on the visit plan"
+    );
+}
+
+#[tokio::test]
+async fn with_a_machine_the_app_cannot_punch_in() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let p = t.puncher(&admin, "WEB009").await;
+    let mut a = Authenticator::new(ORIGIN);
+    let reg = t.register_passkey(&p, &a).await;
+    let device = reg.body["data"]["device_id"].as_str().unwrap().to_owned();
+    t.machine(&admin, json!({})).await;
+    let body = t.punch_body(&p, &mut a, &device, "IN", p.instance).await;
+    let r = t.post("/v1/punch", body, Some(&p.cookie)).await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    assert_eq!(
+        r.body["error"]["field_errors"]["action"], "punch_in_at_machine",
+        "{}",
+        r.body
+    );
+    let n: i64 =
+        sqlx::query_scalar("select count(*) from hrms.attendance_sessions where employee_id = $1")
+            .bind(p.employee_id)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 0);
+}

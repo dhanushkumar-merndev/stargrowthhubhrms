@@ -24,7 +24,8 @@ export type Scope = "user" | "hr" | "admin";
 export function actionScopes(c: Caps): { scope: Scope; label: string; art: string; items: ActionItem[] }[] {
   const user: ActionItem[] = [
     { label: "My attendance", subtitle: "Your days, hours and late marks", href: "/attendance", art: "tile_my_attendance", tile: lav },
-    { label: "Fix a check-in or check-out", subtitle: "Forgot to punch, or the time is wrong", href: "/corrections/new", art: "tile_fix_punch", tile: lav },
+    { label: "My punch", subtitle: "Punch out from the app, or ask to fix a time", href: "/attendance/today", art: "tile_fix_punch", tile: lav },
+    { label: "Outdoor punch-in", subtitle: "Working outside today? Punch in with a photo", href: "/attendance/outdoor/new", art: "location", tile: lav },
     { label: "Work from home", subtitle: "Ask HR to work from home on some days", href: "/requests/new/wfh", art: "home", tile: lav },
     { label: "Excuse a late arrival", subtitle: "Late for a reason? Ask HR not to count it", href: "/requests/new/late", art: "schedule", tile: lav },
     { label: "Request comp-off", subtitle: "Worked on a holiday or day off? Get the day back", href: "/requests/new/comp-off", art: "event_available", tile: lav },
@@ -45,6 +46,8 @@ export function actionScopes(c: Caps): { scope: Scope; label: string; art: strin
   if (c.canManagePayroll) hr.push({ label: "Payroll uploads", subtitle: "Publish payslips and paid amounts", href: "/payroll/uploads", art: "tile_payslips", tile: peach });
   if (c.canViewEmployees) hr.push({ label: "Employees", subtitle: "Directory and employee records", href: "/employees", art: "groups", tile: pink });
   if (c.isHrOrAdmin) {
+    hr.push({ label: "Punch fix requests", subtitle: "Approve or reject asked time fixes", href: "/attendance/fixes", art: "fact_check", tile: lav });
+    hr.push({ label: "Outdoor punch-ins", subtitle: "Who punched in from outside, with photos", href: "/attendance/outdoor", art: "location", tile: lav });
     hr.push({ label: "Team work reports", subtitle: "What everyone did, day by day", href: "/work?tab=team", art: "fact_check", tile: teal });
     hr.push({ label: "Give a task", subtitle: "Assign work with a due date", href: "/tasks/new", art: "assignment", tile: teal });
     hr.push({ label: "Outside work", subtitle: "Send people out: client, site, event", href: "/admin/outside-work", art: "alt_route", tile: lav });

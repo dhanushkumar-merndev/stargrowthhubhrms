@@ -110,7 +110,7 @@ export interface EmployeeDeviceStatus {
   last_command: { kind: CommandKind; status: CommandStatus; return_code: number | null; device_label: string; at: string } | null;
 }
 
-export type DayStatus = "not_in" | "absent" | "in_office" | "checked_out" | "forgot_checkout" | "no_checkout" | "corrected";
+export type DayStatus = "not_in" | "absent" | "in_office" | "checked_out" | "app_checkout" | "outdoor" | "forgot_checkout" | "no_checkout" | "corrected";
 
 export interface AttendanceSettings {
   duplicate_window_minutes: number;
@@ -162,6 +162,8 @@ export function deviceTab(v: string | undefined | null): DeviceTab {
 export const DAY_STATUS: Record<DayStatus, { label: string; tone: Tone }> = {
   in_office: { label: "In office", tone: "success" },
   checked_out: { label: "Checked out", tone: "info" },
+  app_checkout: { label: "Out via app", tone: "info" },
+  outdoor: { label: "Outdoor work", tone: "success" },
   corrected: { label: "Checked out · fixed by HR", tone: "info" },
   forgot_checkout: { label: "Forgot to check out", tone: "warning" },
   no_checkout: { label: "No check-out", tone: "warning" },
