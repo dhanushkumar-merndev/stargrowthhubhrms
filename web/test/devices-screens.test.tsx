@@ -2,7 +2,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SWRConfig } from "swr";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DevicesConsole } from "@/components/screens/devices";
+import { DevicesConsole, EnrolForm } from "@/components/screens/devices";
+import { enrolFailure, enrolStep, openEnrolment } from "@/lib/devices";
 import { SessionProvider } from "@/lib/session";
 import { ctx, fail, mockFetch, ok } from "./helpers";
 
@@ -313,8 +314,10 @@ describe("Devices console", () => {
     const dialog = screen.getByRole("dialog");
     expect(dialog).toHaveTextContent("never receives or stores it");
     await userEvent.selectOptions(within(dialog).getByLabelText("Finger"), "Left thumb");
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Start on the machine" })).toBeEnabled());
     await userEvent.click(within(dialog).getByRole("button", { name: "Start on the machine" }));
-    expect(await screen.findByText(/Front door will ask Priya Menon to scan their left thumb finger/)).toBeInTheDocument();
+    expect(await within(dialog).findByText(/Waiting for Front door to pick it up/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     expect(calls.find((c) => c.path === "/rpc/enroll_device_fingerprint")!.body).toEqual({ p_employee_id: "e7", p_serial: "CKJB12", p_finger: 4 });
 
     await userEvent.click(screen.getByRole("button", { name: "Send everyone" }));
@@ -335,5 +338,67 @@ describe("Devices console", () => {
     mockFetch({ ...base(), "/rpc/list_attendance_day": () => fail(503, "UNAVAILABLE", "The service is busy.") });
     wrap(<DevicesConsole />);
     expect(await screen.findByText("The service is busy.")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------- enrolment progress
+
+
+describe("Enrolment progress", () => {
+  const dev = { serial: "SN1", label: "Front door", commands_enabled: true, active: true } as never;
+  const person = { id: "e3", code: "EMP003", name: "Vinayaka H" } as never;
+  const cmd = (status: string, over: Record<string, unknown> = {}) => ({
+    id: 21, serial: "SN1", device_label: "Front door", kind: "enroll_face", pin: "3",
+    employee: { id: "e3", code: "EMP003", name: "Vinayaka H" }, name: null, status, attempts: 1, return_code: null, created_at: "2026-11-17T10:43:10Z", ...over,
+  });
+
+  it("maps command states and machine codes to plain words", () => {
+    expect(enrolStep({ status: "queued" })).toBe("waiting");
+    expect(enrolStep({ status: "sent" })).toBe("on_machine");
+    expect(enrolStep({ status: "done" })).toBe("done");
+    expect(enrolStep({ status: "cancelled" })).toBe("expired");
+    expect(enrolFailure(-1003)).toMatch(/No scan was captured/);
+    expect(openEnrolment([cmd("done") as never, cmd("sent", { id: 22 }) as never], "e3")?.id).toBe(22);
+    expect(openEnrolment([cmd("sent", { kind: "user_upsert" }) as never], "e3")).toBeUndefined();
+  });
+
+  it("follows the command from sent to the scan screen to saved", async () => {
+    let state = "none";
+    const calls = mockFetch({
+      "/rpc/get_session_context": () => ok(ctx("admin")),
+      "/rpc/enroll_device_face": () => {
+        state = "queued";
+        return ok({ command_id: 21 });
+      },
+      "/rpc/list_device_commands": () => ok(state === "none" ? [] : [cmd(state)]),
+    });
+    const onDone = vi.fn();
+    wrap(<EnrolForm person={person} devices={[dev]} onClose={() => {}} onDone={onDone} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Face" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start on the machine" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "Start on the machine" }));
+    expect(await screen.findByText(/Waiting for Front door to pick it up/)).toBeInTheDocument();
+    expect(calls.find((c) => c.path === "/rpc/enroll_device_face")!.body).toEqual({ p_employee_id: "e3", p_serial: "SN1" });
+    state = "sent";
+    expect(await screen.findByText(/showing the scan screen now. Ask Vinayaka H to scan their face/, undefined, { timeout: 4000 })).toBeInTheDocument();
+    state = "done";
+    expect(await screen.findByText("Vinayaka H's face is saved on Front door.", undefined, { timeout: 4000 })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onDone).toHaveBeenCalledWith("Vinayaka H's face is saved on Front door.");
+  });
+
+  it("shows an open enrolment instead of queuing a duplicate, and explains a timeout", async () => {
+    let state = "sent";
+    const calls = mockFetch({
+      "/rpc/get_session_context": () => ok(ctx("admin")),
+      "/rpc/list_device_commands": () => ok([cmd(state, state === "failed" ? { return_code: -1003 } : {})]),
+    });
+    wrap(<EnrolForm person={person} devices={[dev]} onClose={() => {}} onDone={() => {}} />);
+    expect(await screen.findByText(/showing the scan screen now/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start on the machine" })).toBeNull();
+    state = "failed";
+    expect(await screen.findByText(/No scan was captured before the machine gave up/, undefined, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(calls.some((c) => c.path.startsWith("/rpc/enroll_device"))).toBe(false);
   });
 });

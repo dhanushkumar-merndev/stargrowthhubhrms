@@ -101,6 +101,40 @@ export interface DeviceCommand {
   attempts: number;
   return_code: number | null;
   created_at: string;
+  sent_at?: string | null;
+  completed_at?: string | null;
+}
+
+export type EnrolStep = "waiting" | "on_machine" | "done" | "failed" | "expired";
+
+/** Where an enrolment command is, in words the person at the machine can act on. */
+export function enrolStep(c: Pick<DeviceCommand, "status"> | undefined): EnrolStep {
+  switch (c?.status) {
+    case "sent":
+      return "on_machine";
+    case "done":
+      return "done";
+    case "failed":
+      return "failed";
+    case "expired":
+    case "cancelled":
+      return "expired";
+    default:
+      return "waiting";
+  }
+}
+
+/** Machine return codes seen on enrolment (ZKTeco push protocol). */
+export function enrolFailure(code: number | null | undefined): string {
+  if (code === -1003) return "No scan was captured before the machine gave up (about a minute). Start again when the person is standing at the machine.";
+  if (code === -1002) return "The machine does not support this kind of enrolment.";
+  if (code === -1001) return "That person is not on the machine yet. Try again in a few seconds.";
+  return `The machine could not finish${code != null ? ` (code ${code})` : ""}. Try again.`;
+}
+
+/** An enrolment for this person still waiting or open on a machine. */
+export function openEnrolment(rows: DeviceCommand[] | undefined, employeeId: string): DeviceCommand | undefined {
+  return (rows ?? []).find((c) => c.employee?.id === employeeId && (c.kind === "enroll_fingerprint" || c.kind === "enroll_face") && (c.status === "queued" || c.status === "sent"));
 }
 
 export interface EmployeeDeviceStatus {

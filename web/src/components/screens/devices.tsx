@@ -35,6 +35,10 @@ import {
   type AttendanceDevice,
   type DayRow,
   type DeviceCommand,
+  type EnrolStep,
+  enrolFailure,
+  enrolStep,
+  openEnrolment,
   type DeviceForm,
   type DeviceLink,
   type DevicePunch,
@@ -1042,59 +1046,173 @@ export function EnrolForm({
   const [finger, setFinger] = useState(6);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [commandId, setCommandId] = useState<number | null>(null);
+  // Follow this person's commands every 2 s while an enrolment is open, so the
+  // screen says the moment the machine opens the scan screen or finishes.
+  const cmds = useRpc<DeviceCommand[]>("list_device_commands", { p_employee_id: person.id, p_limit: 10 }, { refreshInterval: (rows) => (openEnrolment(rows, person.id) ? 2000 : 0) });
+  const open = openEnrolment(cmds.data, person.id);
+  // Pin an enrolment that was already running when the sheet opened, so its
+  // result still shows after it leaves the queued/sent states.
+  if (commandId == null && open) setCommandId(open.id);
+  const tracked = commandId != null ? (cmds.data?.find((c) => c.id === commandId) ?? open) : open;
+  // Just started but not in the list yet: it is waiting for the machine.
+  const step: EnrolStep | null = tracked ? enrolStep(tracked) : commandId != null ? "waiting" : null;
   const label = devices.find((d) => d.serial === serial)?.label ?? serial;
+  const thing = (k: string | undefined) => (k === "enroll_face" ? "face" : "fingerprint");
   const start = async () => {
     setBusy(true);
     setError(null);
     try {
-      if (what === "finger") await rpc("enroll_device_fingerprint", { p_employee_id: person.id, p_serial: serial, p_finger: finger });
-      else await rpc("enroll_device_face", { p_employee_id: person.id, p_serial: serial });
-      onDone(`${label} will ask ${person.name} to scan their ${what === "finger" ? FINGERS[finger].toLowerCase() + " finger" : "face"} within 10 minutes.`);
+      const r =
+        what === "finger"
+          ? await rpc<{ command_id: number }>("enroll_device_fingerprint", { p_employee_id: person.id, p_serial: serial, p_finger: finger })
+          : await rpc<{ command_id: number }>("enroll_device_face", { p_employee_id: person.id, p_serial: serial });
+      setCommandId(r?.command_id ?? -1);
+      await cmds.mutate();
     } catch (e) {
       setError(msg(e, "Could not start enrolment."));
     } finally {
       setBusy(false);
     }
   };
+  const cancel = async () => {
+    if (!tracked) return;
+    try {
+      await rpc("cancel_device_command", { p_command_id: tracked.id });
+    } catch (e) {
+      setError(msg(e, "Could not cancel."));
+    }
+    await cmds.mutate();
+  };
   return (
     <Sheet title={`Enrol · ${person.name}`} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        <p className="text-body-md text-text-secondary">The fingerprint or face stays on the machine. HRMS never receives or stores it.</p>
-        {error && <Banner>{error}</Banner>}
-        <label className="flex flex-col gap-1 text-body-sm font-medium">
-          Machine
-          <select value={serial} onChange={(e) => setSerial(e.target.value)} className="min-h-12 rounded-input border border-border bg-surface px-3 text-body-md font-normal">
-            {devices.map((d) => (
-              <option key={d.serial} value={d.serial}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div role="radiogroup" aria-label="What to enrol" className="flex gap-2">
-          <Toggle on={what === "finger"} onChange={() => setWhat("finger")} label="Fingerprint" />
-          <Toggle on={what === "face"} onChange={() => setWhat("face")} label="Face" />
-        </div>
-        {what === "finger" && (
-          <label className="flex flex-col gap-1 text-body-sm font-medium">
-            Finger
-            <select value={finger} onChange={(e) => setFinger(Number(e.target.value))} className="min-h-12 rounded-input border border-border bg-surface px-3 text-body-md font-normal">
-              {FINGERS.map((f, i) => (
-                <option key={f} value={i}>
-                  {f}
-                </option>
-              ))}
-            </select>
-          </label>
+        {step ? (
+          <EnrolProgress
+            step={step}
+            name={person.name}
+            thing={tracked ? thing(tracked.kind) : what === "face" ? "face" : "fingerprint"}
+            machine={tracked?.device_label ?? label}
+            failure={step === "failed" ? enrolFailure(tracked?.return_code) : null}
+            onCancel={step === "waiting" || step === "on_machine" ? cancel : undefined}
+            onAgain={() => {
+              setCommandId(null);
+              void cmds.mutate();
+            }}
+            onFinish={() => onDone(`${person.name}'s ${thing(tracked?.kind)} is saved on ${tracked?.device_label ?? label}.`)}
+          />
+        ) : (
+          <>
+            <p className="text-body-md text-text-secondary">The fingerprint or face stays on the machine. HRMS never receives or stores it.</p>
+            {error && <Banner>{error}</Banner>}
+            <label className="flex flex-col gap-1 text-body-sm font-medium">
+              Machine
+              <select value={serial} onChange={(e) => setSerial(e.target.value)} className="min-h-12 rounded-input border border-border bg-surface px-3 text-body-md font-normal">
+                {devices.map((d) => (
+                  <option key={d.serial} value={d.serial}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div role="radiogroup" aria-label="What to enrol" className="flex gap-2">
+              <Toggle on={what === "finger"} onChange={() => setWhat("finger")} label="Fingerprint" />
+              <Toggle on={what === "face"} onChange={() => setWhat("face")} label="Face" />
+            </div>
+            {what === "finger" && (
+              <label className="flex flex-col gap-1 text-body-sm font-medium">
+                Finger
+                <select value={finger} onChange={(e) => setFinger(Number(e.target.value))} className="min-h-12 rounded-input border border-border bg-surface px-3 text-body-md font-normal">
+                  {FINGERS.map((f, i) => (
+                    <option key={f} value={i}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <p className="text-body-sm text-text-secondary">Start this when {person.name} is standing at the machine. The scan screen waits about a minute.</p>
+            <Button busy={busy} disabled={!serial || (!cmds.data && !cmds.error)} onClick={start}>
+              Start on the machine
+            </Button>
+            <Link href="/devices?tab=machines" className="text-center text-body-md font-semibold text-primary">
+              Machine not listed? Turn on commands for it
+            </Link>
+          </>
         )}
-        <Button busy={busy} disabled={!serial} onClick={start}>
-          Start on the machine
-        </Button>
-        <Link href="/devices?tab=machines" className="text-center text-body-md font-semibold text-primary">
-          Machine not listed? Turn on commands for it
-        </Link>
       </div>
     </Sheet>
+  );
+}
+
+const ENROL_STEPS: { id: EnrolStep; label: string }[] = [
+  { id: "waiting", label: "Sent to the machine" },
+  { id: "on_machine", label: "Scan screen open" },
+  { id: "done", label: "Saved on the machine" },
+];
+
+function EnrolProgress({
+  step,
+  name,
+  thing,
+  machine,
+  failure,
+  onCancel,
+  onAgain,
+  onFinish,
+}: {
+  step: EnrolStep;
+  name: string;
+  thing: string;
+  machine: string;
+  failure: string | null;
+  onCancel?: () => void;
+  onAgain: () => void;
+  onFinish: () => void;
+}) {
+  const at = step === "waiting" ? 0 : step === "on_machine" ? 1 : 2;
+  const ended = step === "failed" || step === "expired";
+  return (
+    <div className="flex flex-col gap-4" aria-live="polite">
+      <ol className="flex flex-col gap-3">
+        {ENROL_STEPS.map((s, i) => {
+          const doneStep = !ended && (i < at || step === "done");
+          const current = !ended && i === at && step !== "done";
+          return (
+            <li key={s.id} className="flex items-center gap-3">
+              <span
+                className={cx(
+                  "grid size-7 shrink-0 place-items-center rounded-full text-[13px] font-bold",
+                  doneStep ? "bg-success text-white" : current ? "bg-primary text-white" : "bg-[#eff1f4] text-text-secondary",
+                )}
+              >
+                {doneStep ? "✓" : i + 1}
+              </span>
+              <span className={cx("text-body-md", current ? "font-semibold" : doneStep ? "" : "text-text-secondary")}>{s.label}</span>
+              {current && <span className="ml-auto size-4 animate-spin rounded-full border-2 border-primary border-t-transparent motion-reduce:animate-none" aria-hidden />}
+            </li>
+          );
+        })}
+      </ol>
+      {step === "waiting" && <p className="text-body-md">Waiting for {machine} to pick it up. It checks for new work every few seconds.</p>}
+      {step === "on_machine" && (
+        <Banner tone="info">
+          {machine} is showing the scan screen now. Ask {name} to scan their {thing}.
+        </Banner>
+      )}
+      {step === "done" && <Banner tone="success">{`${name}'s ${thing} is saved on ${machine}.`}</Banner>}
+      {step === "failed" && failure && <Banner>{failure}</Banner>}
+      {step === "expired" && <Banner tone="warning">This enrolment was cancelled or expired before it ran.</Banner>}
+      <div className="flex flex-wrap justify-end gap-2">
+        {onCancel && (
+          <Button variant="text" onClick={onCancel}>
+            Cancel enrolment
+          </Button>
+        )}
+        {ended && <Button onClick={onAgain}>Try again</Button>}
+        {step === "done" && <Button onClick={onFinish}>Done</Button>}
+      </div>
+    </div>
   );
 }
 
