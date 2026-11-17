@@ -2,12 +2,12 @@
 
 // settings_screen.dart + the new "Your devices" section (sessions UI, P10 §7).
 
+import Link from "next/link";
 import { useState } from "react";
 import { ApiError, rpc } from "@/lib/api";
-import { roleLabel } from "@/lib/roles";
 import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
-import { ActionRow, Banner, Button, ErrorState, LoadingState, PageTitle, SectionCard } from "../ui";
+import { ActionRow, Art, Banner, Button, ErrorState, KeyValue, LoadingState, PageTitle, SectionCard, Sheet } from "../ui";
 
 interface DeviceSession {
   id: string;
@@ -31,6 +31,7 @@ export function Settings() {
   const sessions = useRpc<DeviceSession[]>("list_my_sessions");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmOut, setConfirmOut] = useState(false);
 
   async function end(id: string | "others") {
     setBusy(id);
@@ -52,16 +53,29 @@ export function Settings() {
       <PageTitle title="Settings" back="/explore" />
       <div className="mx-auto flex max-w-xl md:max-w-2xl flex-col gap-4 p-page">
         <SectionCard>
-          <p className="text-title-md font-semibold">{context?.employee.name}</p>
+          <p className="text-title-md font-medium">{context?.employee.name}</p>
           <p className="text-body-md text-text-secondary">
-            {context?.employee.code} · {roleLabel(context?.role ?? "employee")}
+            {context?.employee.code} · {context?.org.name}
           </p>
+          <Link href="/settings/password" className="mt-3 flex min-h-12 items-center justify-center gap-2 rounded-button border border-border font-semibold text-primary">
+            <Art name="password" size={22} />
+            Change password
+          </Link>
         </SectionCard>
-        <ActionRow art="notifications" label="Notifications" subtitle="Turn on alerts, choose what to get, quiet hours" tile="bg-leave-card" href="/settings/notifications" />
-        <ActionRow art="holiday_calendar" label="Calendar subscription" subtitle="Holidays and your leave in your calendar app" tile="bg-attendance-card" href="/settings/calendar" />
-        <ActionRow art="celebration" label="Birthday and anniversary" subtitle="Choose what colleagues see on Home" tile="bg-people-card" href="/settings/celebrations" />
-        <ActionRow art="lock" label="Two-step sign-in" subtitle="A code from your phone at every sign-in" tile="bg-approvals-card" href="/settings/two-step" />
-        <ActionRow art="password" label="Change password" subtitle="Signs out your other devices" tile="bg-attendance-card" href="/settings/password" />
+        <section aria-labelledby="notif-h" className="flex flex-col gap-2">
+          <h2 id="notif-h" className="px-1 text-title-sm font-semibold">
+            Notifications
+          </h2>
+          <ActionRow art="notifications" label="Notifications" subtitle="Turn on alerts, choose what to get, quiet hours" tile="bg-leave-card" href="/settings/notifications" />
+          <ActionRow art="holiday_calendar" label="Calendar subscription" subtitle="Holidays and your leave in your calendar app" tile="bg-attendance-card" href="/settings/calendar" />
+          <ActionRow art="celebration" label="Birthday and anniversary" subtitle="Choose what colleagues see on Home" tile="bg-people-card" href="/settings/celebrations" />
+        </section>
+        <section aria-labelledby="security-h" className="flex flex-col gap-2">
+          <h2 id="security-h" className="px-1 text-title-sm font-semibold">
+            Sign-in security
+          </h2>
+          <ActionRow art="lock" label="Two-step sign-in" subtitle="A code from your phone at every sign-in" tile="bg-approvals-card" href="/settings/two-step" />
+        </section>
         <SectionCard>
           <h2 className="text-title-md font-semibold">Your devices</h2>
           <p className="mt-1 text-body-md text-text-secondary">Places where you are signed in. End any you don&apos;t recognise.</p>
@@ -99,9 +113,30 @@ export function Settings() {
             </Button>
           )}
         </SectionCard>
-        <Button variant="danger" onClick={() => void logout()}>
+        <SectionCard>
+          <h2 className="text-title-sm font-semibold">About</h2>
+          <div className="mt-2">
+            <KeyValue k="App" v="HRMS web app" />
+            <KeyValue k="Environment" v={process.env.NODE_ENV === "production" ? "Production" : "Development"} />
+            <KeyValue k="Help" v={context?.org.support_contact || "Contact HR"} />
+          </div>
+        </SectionCard>
+        <Button variant="danger" className="mt-4" onClick={() => setConfirmOut(true)}>
           Sign out
         </Button>
+        {confirmOut && (
+          <Sheet title="Sign out?" onClose={() => setConfirmOut(false)}>
+            <p className="text-body-md text-text-secondary">You will need your password to sign in again on this device.</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="text" onClick={() => setConfirmOut(false)}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={() => void logout()}>
+                Sign out
+              </Button>
+            </div>
+          </Sheet>
+        )}
       </div>
     </div>
   );

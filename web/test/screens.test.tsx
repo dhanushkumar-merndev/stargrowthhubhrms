@@ -341,6 +341,7 @@ describe("Settings: your devices", () => {
     );
     const btn = await screen.findByRole("button", { name: "Sign out" });
     await userEvent.click(btn);
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Sign out?" })).getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/login"));
     expect(calls.some((c) => c.path === "/auth/logout")).toBe(true);
   });
