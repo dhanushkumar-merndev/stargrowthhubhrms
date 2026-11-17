@@ -227,39 +227,72 @@ const row = (date: string, over: Record<string, unknown> = {}) => ({
 });
 
 describe("My attendance", () => {
-  it("shows totals and past days only, and pages back by month", async () => {
+  it("shows the month card, past days first, upcoming folded, and pages back by month", async () => {
     const calls = mockFetch({
       "/rpc/get_session_context": () => ok(ctx("employee")),
       "/rpc/list_my_attendance": (b) => {
         const from = (b as { p_from: string }).p_from;
         return ok({
-          rows: from === "2026-11-01" ? [row("2026-11-20", { status: "upcoming" }), row("2026-11-13", { is_late: true }), row("2026-11-12", { status: "absent", effective_in_at: null, credited_seconds: 0 })] : [],
-          totals: { present_days: 1, late_days: 1, absent_days: 1, credited_seconds: 32400, required_seconds: 64800, shortfall_seconds: 32400 },
+          rows: from === "2026-11-01"
+            ? [
+                row("2026-11-20", { status: "upcoming", effective_in_at: null, is_required: true, start_at: "2026-11-20T03:30:00Z", end_at: "2026-11-20T12:30:00Z" }),
+                row("2026-11-13", { is_late: true, shortfall_seconds: 1800 }),
+                row("2026-11-12", { status: "absent", effective_in_at: null, credited_seconds: 0 }),
+                row("2026-11-14", { status: "in_progress", effective_out_at: null }),
+              ]
+            : [],
+          totals: { present_days: 1, late_days: 1, absent_days: 1, leave_days: 0, credited_seconds: 32400, required_seconds: 64800, shortfall_seconds: 32400, extra_seconds: 0 },
         });
       },
     });
     wrap(<Attendance now={NOW} />);
     expect(await screen.findByText("Present · late")).toBeInTheDocument();
-    const days = screen.getByRole("list");
-    expect(within(days).getAllByRole("listitem")).toHaveLength(2);
-    expect(within(days).getByText("Absent")).toBeInTheDocument();
-    expect(within(days).queryByText("Upcoming")).not.toBeInTheDocument();
-    expect(screen.getByText("No punches")).toBeInTheDocument();
-    expect(screen.getByLabelText("Month totals")).toHaveTextContent("9h 00m");
+    const totals = screen.getByLabelText("Month totals");
+    expect(totals).toHaveTextContent("Worked this month");
+    expect(totals).toHaveTextContent("9h 00m");
+    expect(within(totals).getByLabelText("1 Late")).toBeInTheDocument();
+    expect(within(totals).getByLabelText("1 In progress")).toBeInTheDocument();
+    expect(totals).toHaveTextContent("Today is added to the totals when you check out.");
+    const days = screen.getAllByRole("list").find((l) => l.closest("section") === null)!;
+    const items = within(days).getAllByRole("listitem");
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveTextContent("Today");
+    expect(items[0]).toHaveTextContent("now");
+    expect(screen.getByText("-30m")).toBeInTheDocument();
+    expect(screen.queryByText("Upcoming")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show 1 upcoming day" }));
+    expect(within(screen.getByRole("list", { name: "Upcoming days" })).getByText(/Shift 9:00 AM/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Fix a punch/ })).toHaveAttribute("href", "/corrections/new");
     expect(screen.getByRole("button", { name: "Next month" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Previous month" }));
-    expect(await screen.findByText("No days yet")).toBeInTheDocument();
+    expect(await screen.findByText("No attendance days")).toBeInTheDocument();
     expect(calls.filter((c) => c.path === "/rpc/list_my_attendance").at(-1)!.body).toEqual({ p_from: "2026-10-01", p_to: "2026-10-31" });
   });
 
-  it("links each day to its detail", async () => {
+  it("links each day to its detail and switches to the calendar", async () => {
     mockFetch({
       "/rpc/get_session_context": () => ok(ctx("employee")),
       "/rpc/list_my_attendance": () => ok({ rows: [row("2026-11-13")], totals: {} }),
     });
     wrap(<Attendance now={NOW} />);
-    const link = await screen.findByRole("link", { name: /Fri, 13 Nov/ });
+    const link = await screen.findByRole("link", { name: /Fri 13: Present/ });
     expect(link).toHaveAttribute("href", "/attendance/2026-11-13");
+    await userEvent.click(screen.getByRole("button", { name: "Show calendar" }));
+    expect(screen.getByRole("link", { name: "13, Present" })).toHaveAttribute("href", "/attendance/2026-11-13");
+    expect(screen.getByLabelText("12, No schedule")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show list" })).toBeInTheDocument();
+  });
+
+  it("filters to days that need a fix", async () => {
+    mockFetch({
+      "/rpc/get_session_context": () => ok(ctx("employee")),
+      "/rpc/list_my_attendance": () => ok({ rows: [row("2026-11-13"), row("2026-11-12", { status: "needs_correction", effective_out_at: null })], totals: {} }),
+    });
+    wrap(<Attendance now={NOW} filter="needs_correction" />);
+    expect(await screen.findByRole("link", { name: /Fix check-out for/ })).toHaveAttribute("href", "/corrections/new?date=2026-11-12&fix=out");
+    expect(screen.queryByRole("link", { name: /Fri 13: Present/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Remove filter" }));
+    expect(await screen.findByRole("link", { name: /Fri 13: Present/ })).toBeInTheDocument();
   });
 });
 
