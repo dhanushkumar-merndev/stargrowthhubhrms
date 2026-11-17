@@ -237,13 +237,39 @@ export function myEmptyTitle(state: string): string {
   return `No ${label.toLowerCase()} requests`;
 }
 
+/** approvals_screen.dart kind pills (plus comp-off, which the web also takes). */
 export const REVIEW_KINDS = [
   { id: "", label: "All" },
   { id: "leave", label: "Leave" },
-  { id: "correction", label: "Fixes" },
-  { id: "wfh", label: "WFH" },
+  { id: "correction", label: "Corrections" },
+  { id: "wfh", label: "Work from home" },
   { id: "late_excuse", label: "Late" },
   { id: "comp_off", label: "Comp-off" },
+  { id: "bank_details", label: "Bank" },
+  { id: "profile_details", label: "Profile" },
+  { id: "employee_details", label: "Employee" },
+  { id: "employee_assignment", label: "Assignment" },
+  { id: "employee_status", label: "Status" },
+  { id: "salary_change", label: "Salary" },
+  { id: "payslip_publish", label: "Payslips" },
+] as const;
+
+export const REVIEW_STATES = [
+  { id: "", label: "All pending" },
+  { id: "submitted", label: "New" },
+  { id: "under_review", label: "In review" },
+  { id: "withdrawal_pending", label: "Withdrawals" },
+  { id: "cancellation_pending", label: "Cancellations" },
+  { id: "completed", label: "Completed" },
+  { id: "approved", label: "Approved" },
+  { id: "rejected", label: "Not approved" },
+  { id: "cancelled", label: "Cancelled" },
+] as const;
+
+export const REVIEW_SCOPES = [
+  { id: "mine", label: "Assigned to me" },
+  { id: "unassigned", label: "No approver" },
+  { id: "all", label: "Everyone" },
 ] as const;
 
 /** Reads a string field from a revision payload. */

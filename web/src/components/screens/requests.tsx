@@ -19,6 +19,8 @@ import {
   MY_STATES,
   myEmptyTitle,
   REVIEW_KINDS,
+  REVIEW_SCOPES,
+  REVIEW_STATES,
   appendPage,
   currentPayload,
   editHref,
@@ -251,6 +253,55 @@ function ReasonSheet({
   );
 }
 
+/* ───────────────────────── filter sheet (filter_sheet.dart) ───────────────────────── */
+
+interface FilterGroup {
+  title: string;
+  options: readonly { id: string; label: string }[];
+  value: string;
+  onPick: (id: string) => void;
+}
+
+function FilterButton({ active, onClick }: { active: number; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} aria-label={active ? `Filters, ${active} active` : "Filters"} className="relative grid size-12 place-items-center rounded-full">
+      <Glyph name="filter_list" />
+      {active > 0 && <span className="absolute right-2 top-2 grid size-4 place-items-center rounded-full bg-primary text-[10px] font-bold text-white">{active}</span>}
+    </button>
+  );
+}
+
+function FilterSheet({ groups, onClose }: { groups: FilterGroup[]; onClose: () => void }) {
+  return (
+    <Sheet title="Filters" onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        {groups.map((g) => (
+          <fieldset key={g.title}>
+            <legend className="mb-2 text-title-sm font-semibold">{g.title}</legend>
+            <div className="flex flex-wrap gap-2">
+              {g.options.map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  aria-pressed={g.value === o.id}
+                  onClick={() => g.onPick(o.id)}
+                  className={cx(
+                    "min-h-10 rounded-full border px-4 text-body-md font-semibold",
+                    g.value === o.id ? "border-primary bg-attendance-card text-primary" : "border-border bg-surface text-text",
+                  )}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+        ))}
+        <Button onClick={onClose}>Done</Button>
+      </div>
+    </Sheet>
+  );
+}
+
 /* ───────────────────────── My requests ───────────────────────── */
 
 type MyKind = (typeof MY_KINDS)[number]["id"];
@@ -262,21 +313,7 @@ export function MyRequests() {
   const paged = usePaged("list_my_requests", { p_kind: kind || null, p_state: state || null }, "p_before_created_at", (r) => r.created_at);
   return (
     <>
-      <PageTitle
-        title="My requests"
-        back="/explore"
-        action={
-          <button
-            type="button"
-            onClick={() => setSheet(true)}
-            aria-label={state ? "Filters, 1 active" : "Filters"}
-            className="relative grid size-12 place-items-center rounded-full"
-          >
-            <Glyph name="filter_list" />
-            {state && <span className="absolute right-2 top-2 grid size-4 place-items-center rounded-full bg-primary text-[10px] font-bold text-white">1</span>}
-          </button>
-        }
-      />
+      <PageTitle title="My requests" back="/explore" action={<FilterButton active={state ? 1 : 0} onClick={() => setSheet(true)} />} />
       <div className="mx-auto flex max-w-xl flex-col gap-4 p-page md:max-w-3xl lg:max-w-5xl">
         <PillTabs label="Request type" tabs={MY_KINDS} value={kind} onChange={setKind} />
         <List
@@ -286,30 +323,20 @@ export function MyRequests() {
         />
       </div>
       {sheet && (
-        <Sheet title="Filters" onClose={() => setSheet(false)}>
-          <fieldset>
-            <legend className="mb-2 text-title-sm font-semibold">Status</legend>
-            <div className="flex flex-wrap gap-2">
-              {MY_STATES.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  aria-pressed={state === s.id}
-                  onClick={() => {
-                    setState(s.id);
-                    setSheet(false);
-                  }}
-                  className={cx(
-                    "min-h-10 rounded-full border px-4 text-body-md font-semibold",
-                    state === s.id ? "border-primary bg-attendance-card text-primary" : "border-border bg-surface text-text",
-                  )}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-        </Sheet>
+        <FilterSheet
+          onClose={() => setSheet(false)}
+          groups={[
+            {
+              title: "Status",
+              options: MY_STATES,
+              value: state,
+              onPick: (v) => {
+                setState(v);
+                setSheet(false);
+              },
+            },
+          ]}
+        />
       )}
     </>
   );
@@ -424,13 +451,15 @@ export function ReviewQueue({ initialScope }: { initialScope?: Scope }) {
   const { context } = useSession();
   const c = caps(context);
   const [wanted, setScope] = useState<Scope>(initialScope ?? "mine");
-  // Only Admin may look beyond their own queue; wait for the session before asking.
-  const scope: Scope = c.isAdmin ? wanted : "mine";
+  // Admin sees everyone; HR also sees the no-approver pool (as the server allows).
+  const scopes = REVIEW_SCOPES.filter((s) => s.id === "mine" || (s.id === "unassigned" && c.isHrOrAdmin) || (s.id === "all" && c.isAdmin));
+  const scope: Scope = scopes.some((s) => s.id === wanted) ? wanted : "mine";
   const [kind, setKind] = useState<ReviewKind>("");
-  const [done, setDone] = useState<"" | "completed">("");
+  const [state, setState] = useState<string>("");
+  const [sheet, setSheet] = useState(false);
   const paged = usePaged(
     context ? "list_review_queue" : null,
-    { p_scope: scope, p_kind: kind || null, p_state: done || null },
+    { p_scope: scope, p_kind: kind || null, p_state: state || null },
     "p_before_submitted_at",
     (r) => r.submitted_at,
   );
@@ -441,32 +470,40 @@ export function ReviewQueue({ initialScope }: { initialScope?: Scope }) {
         <EmptyState art="lock" title="Only HR or Admin can review requests" />
       </>
     );
-  const scopes = [
-    { id: "mine" as const, label: "Assigned to me" },
-    ...(c.isAdmin ? [{ id: "all" as const, label: "Everyone" }, { id: "unassigned" as const, label: "No approver" }] : []),
-  ];
+  const active = (state ? 1 : 0) + (scope !== "mine" ? 1 : 0);
   return (
     <>
-      <PageTitle title="Review requests" back="/explore" />
-      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-3 p-page">
-        {scopes.length > 1 && <PillTabs label="Whose requests" tabs={scopes} value={scope} onChange={setScope} />}
-        <PillTabs label="Kind" tabs={REVIEW_KINDS} value={kind} onChange={setKind} />
-        <PillTabs
-          label="Status"
-          tabs={[
-            { id: "" as const, label: "Waiting" },
-            { id: "completed" as const, label: "Decided" },
-          ]}
-          value={done}
-          onChange={setDone}
-        />
+      <PageTitle title="Review requests" back="/explore" action={<FilterButton active={active} onClick={() => setSheet(true)} />} />
+      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page md:max-w-3xl lg:max-w-5xl">
+        <PillTabs label="Request type" tabs={REVIEW_KINDS} value={kind} onChange={setKind} />
         <List
           paged={paged}
           showWho
           href={(r) => `/approvals/${r.id}`}
-          empty={<EmptyState art="check_circle" title={done ? "Nothing decided yet" : "All caught up"} body={done ? undefined : "No requests are waiting for you."} />}
+          empty={
+            <EmptyState
+              art="fact_check"
+              title={state === "completed" ? "No completed requests" : "Nothing to review"}
+              body={
+                state === "completed"
+                  ? "Approved, not approved and cancelled decisions appear here."
+                  : scope === "unassigned"
+                    ? "Every pending request has an approver."
+                    : ""
+              }
+            />
+          }
         />
       </div>
+      {sheet && (
+        <FilterSheet
+          onClose={() => setSheet(false)}
+          groups={[
+            { title: "Status", options: REVIEW_STATES, value: state, onPick: setState },
+            ...(scopes.length > 1 ? [{ title: "Whose requests", options: scopes, value: scope, onPick: (v: string) => setScope(v as Scope) }] : []),
+          ]}
+        />
+      )}
     </>
   );
 }

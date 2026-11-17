@@ -175,29 +175,37 @@ describe("Review queue", () => {
     expect(calls.filter((c) => c.path === "/rpc/list_review_queue").every((c) => (c.body as { p_scope: string }).p_scope === "mine")).toBe(true);
   });
 
-  it("HR sees only their queue; filters change the query", async () => {
+  it("HR sees their queue and the no-approver pool; pills and the sheet change the query", async () => {
     const calls = mockFetch({ ...session("hr"), "/rpc/list_review_queue": () => ok([row(1)]) });
     wrap(<ReviewQueue />);
     expect(await screen.findByText("Ravi Kumar · EMP002")).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Everyone" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("tab", { name: "WFH" }));
-    await userEvent.click(screen.getByRole("tab", { name: "Decided" }));
-    await waitFor(() => expect(calls.at(-1)!.body).toMatchObject({ p_scope: "mine", p_kind: "wfh", p_state: "completed" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Work from home" }));
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
+    const sheet = screen.getByRole("dialog", { name: "Filters" });
+    expect(within(sheet).queryByRole("button", { name: "Everyone" })).not.toBeInTheDocument();
+    await userEvent.click(within(sheet).getByRole("button", { name: "Completed" }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "No approver" }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(calls.at(-1)!.body).toMatchObject({ p_scope: "unassigned", p_kind: "wfh", p_state: "completed" }));
+    expect(screen.getByRole("button", { name: "Filters, 2 active" })).toBeInTheDocument();
   });
 
   it("Admin can look at everyone and at requests with no approver", async () => {
     const calls = mockFetch({ ...session("admin"), "/rpc/list_review_queue": () => ok([]) });
     wrap(<ReviewQueue initialScope="unassigned" />);
-    expect(await screen.findByText("All caught up")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "No approver" })).toHaveAttribute("aria-selected", "true");
-    await userEvent.click(screen.getByRole("tab", { name: "Everyone" }));
+    expect(await screen.findByText("Nothing to review")).toBeInTheDocument();
+    expect(screen.getByText("Every pending request has an approver.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Filters, 1 active" }));
+    const sheet = screen.getByRole("dialog", { name: "Filters" });
+    expect(within(sheet).getByRole("button", { name: "No approver" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Everyone" }));
     await waitFor(() => expect(calls.at(-1)!.body).toMatchObject({ p_scope: "all" }));
   });
 
   it("a non-admin cannot force another scope through the URL", async () => {
     const calls = mockFetch({ ...session("hr"), "/rpc/list_review_queue": () => ok([]) });
     wrap(<ReviewQueue initialScope="all" />);
-    await screen.findByText("All caught up");
+    await screen.findByText("Nothing to review");
     expect(calls.filter((c) => c.path === "/rpc/list_review_queue").every((c) => (c.body as { p_scope: string }).p_scope === "mine")).toBe(true);
   });
 });
