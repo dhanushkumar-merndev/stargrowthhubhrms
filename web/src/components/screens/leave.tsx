@@ -23,7 +23,6 @@ import {
   normalizeSlots,
   slotOptions,
   splitHolidays,
-  usedShare,
 } from "@/lib/leave";
 import { type RequestDetail, type RequestRow, currentPayload, requestDates, requestTitle, stateOf } from "@/lib/requests";
 import { caps } from "@/lib/roles";
@@ -31,11 +30,24 @@ import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
 import { type FileClass, uploadFile } from "@/lib/files";
 import { FilePicker } from "../files";
+import { Glyph } from "../glyphs";
 import { Art, Banner, Button, EmptyState, ErrorState, LoadingState, PageTitle, SectionCard, StatusChip, TextArea, TextField, cx } from "../ui";
 
 const msg = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
 
 /* ───────────────────────── Balances ───────────────────────── */
+
+/** "2026", or "Apr 2026 – Mar 2027" when the leave year does not start in January. */
+export function leaveYearLabel(year: number, startMonth = 1): string {
+  if (startMonth === 1) return String(year);
+  const mon = (m: number) => new Date(Date.UTC(2000, m - 1, 1)).toLocaleDateString("en-GB", { month: "short", timeZone: "UTC" });
+  return `${mon(startMonth)} ${year} – ${mon(startMonth - 1)} ${year + 1}`;
+}
+
+const plainDays = (units: number | null | undefined) => {
+  const d = (units ?? 0) / 2;
+  return String(d);
+};
 
 export function LeaveBalances() {
   const [year, setYear] = useState<number | null>(null);
@@ -45,19 +57,19 @@ export function LeaveBalances() {
 
   return (
     <>
-      <PageTitle title="Leave balance" back="/explore" />
-      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
+      <PageTitle title="Leave" back="/explore" />
+      <div className="mx-auto flex max-w-xl flex-col gap-3 px-page pb-24 pt-2 md:max-w-3xl lg:max-w-5xl">
         {shown != null && (
-          <div className="flex items-center justify-between">
-            <Button variant="text" onClick={() => setYear(shown - 1)} aria-label="Previous leave year">
-              ‹ {shown - 1}
-            </Button>
-            <p className="text-title-md font-semibold" aria-live="polite">
-              Leave year {shown}
+          <div className="flex items-center">
+            <button type="button" onClick={() => setYear(shown - 1)} aria-label="Previous leave year" className="grid size-12 place-items-center rounded-full">
+              <Glyph name="chevron_right" className="rotate-180" />
+            </button>
+            <p className="flex-1 text-center text-title-md font-medium" aria-live="polite">
+              Leave year {leaveYearLabel(shown, bal.data?.leave_year_start_month)}
             </p>
-            <Button variant="text" onClick={() => setYear(shown + 1)} aria-label="Next leave year">
-              {shown + 1} ›
-            </Button>
+            <button type="button" onClick={() => setYear(shown + 1)} aria-label="Next leave year" className="grid size-12 place-items-center rounded-full">
+              <Glyph name="chevron_right" />
+            </button>
           </div>
         )}
         {bal.error ? (
@@ -65,78 +77,69 @@ export function LeaveBalances() {
         ) : !bal.data ? (
           <LoadingState />
         ) : bal.data.balances.length === 0 ? (
-          <EmptyState art="beach" title="No leave set up" body="HR has not allocated leave for this year yet." />
+          <EmptyState art="beach" title="No leave types yet" body="Your Admin has not published leave types for this organisation." />
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2" aria-label="Balances">
             {bal.data.balances.map((b) => (
               <li key={b.leave_type.id}>
                 <SectionCard className="bg-leave-card">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <p className="text-title-md font-semibold">{b.leave_type.name}</p>
-                      <p className="text-body-sm text-text-secondary">{b.leave_type.paid ? "Paid" : "Unpaid"}</p>
-                    </div>
-                    <p className="text-right">
-                      <span className="block text-headline-sm font-bold">{b.available_units == null ? "No limit" : daysLabel(b.available_units)}</span>
-                      {b.available_units != null && <span className="text-body-sm text-text-secondary">available</span>}
-                    </p>
+                  <div className="flex items-center gap-2">
+                    <p className="flex-1 text-title-md font-medium">{b.leave_type.name}</p>
+                    {b.leave_type.paid ? (
+                      <p className="text-leave-action">
+                        <span className="text-[28px] font-bold">{b.available_units == null ? "∞" : plainDays(b.available_units)}</span>
+                        {" days left"}
+                      </p>
+                    ) : (
+                      <StatusChip label="Unpaid" tone="neutral" />
+                    )}
                   </div>
-                  {b.leave_type.paid && b.allocated_units > 0 && (
-                    <div
-                      className="mt-3 h-2 overflow-hidden rounded-full bg-white/70"
-                      role="meter"
-                      aria-label={`${b.leave_type.name} used`}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={Math.round(usedShare(b) * 100)}
-                    >
-                      <div className="h-full rounded-full bg-leave-action" style={{ width: `${usedShare(b) * 100}%` }} />
-                    </div>
+                  {b.leave_type.paid && (
+                    <dl className="mt-3 flex">
+                      {(
+                        [
+                          ["Allocated", b.allocated_units],
+                          ["Used", b.used_units],
+                          ["Pending", b.reserved_units],
+                          ...(b.expired_units > 0 ? ([["Expired", b.expired_units]] as [string, number][]) : []),
+                        ] as [string, number][]
+                      ).map(([label, units]) => (
+                        <div key={label} className="flex-1">
+                          <dt className="text-body-sm text-text-secondary">{label}</dt>
+                          <dd className="text-[16px] font-semibold">{plainDays(units)}</dd>
+                        </div>
+                      ))}
+                    </dl>
                   )}
-                  <dl className="mt-3 grid grid-cols-3 gap-2 text-body-sm">
-                    <div>
-                      <dt className="text-text-secondary">Allocated</dt>
-                      <dd className="font-semibold">{daysLabel(b.allocated_units)}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-text-secondary">Used</dt>
-                      <dd className="font-semibold">{daysLabel(b.used_units)}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-text-secondary">Pending</dt>
-                      <dd className="font-semibold">{daysLabel(b.reserved_units)}</dd>
-                    </div>
-                  </dl>
-                  {b.expired_units > 0 && <p className="mt-2 text-body-sm text-text-secondary">{daysLabel(b.expired_units)} expired</p>}
                 </SectionCard>
               </li>
             ))}
           </ul>
         )}
-        <Link href="/leave/apply" className="inline-flex min-h-[52px] items-center justify-center rounded-button bg-primary px-4 font-semibold text-white">
-          Apply for leave
-        </Link>
-        <h2 className="mt-2 text-title-md font-semibold">Recent leave</h2>
+        <h2 className="mt-3 text-title-md font-medium">Leave history</h2>
         {history.error ? (
           <ErrorState message={msg(history.error, "Could not load your leave.")} onRetry={() => history.mutate()} />
         ) : !history.data ? (
           <LoadingState />
         ) : history.data.length === 0 ? (
-          <EmptyState art="beach" title="No leave yet" body="Leave you apply for shows up here." />
+          <p className="p-4 text-body-md text-text-secondary">No leave requests yet.</p>
         ) : (
           <ul className="flex flex-col gap-2">
             {history.data.map((r) => {
               const s = stateOf(r.state);
               return (
                 <li key={r.id}>
-                  <Link href={`/requests/${r.id}`} className="block rounded-card border border-border bg-surface p-card">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold">{requestTitle(r)}</span>
-                      <StatusChip label={s.label} tone={s.tone} />
-                    </div>
-                    <p className="mt-1 text-body-md text-text-secondary">
-                      {requestDates(r)} · {daysLabel(r.units)}
-                    </p>
+                  <Link href={`/requests/${r.id}`} className="flex items-center gap-3 rounded-row border border-border bg-surface p-3">
+                    <span className="grid size-icon-tile shrink-0 place-items-center rounded-xl bg-leave-card">
+                      <Art name="beach" size={28} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-title-sm font-semibold">{requestTitle(r)}</span>
+                      <span className="block text-body-md text-text-secondary">
+                        {requestDates(r)} · {daysLabel(r.units)}
+                      </span>
+                    </span>
+                    <StatusChip label={s.label} tone={s.tone} />
                   </Link>
                 </li>
               );
@@ -144,6 +147,13 @@ export function LeaveBalances() {
           </ul>
         )}
       </div>
+      <Link
+        href="/leave/apply"
+        className="fixed bottom-[calc(84px+env(safe-area-inset-bottom))] right-4 z-20 inline-flex h-14 items-center gap-2 rounded-2xl bg-leave-card px-4 text-[15px] font-semibold text-text shadow-[0_3px_8px_rgba(38,51,66,0.18)] md:bottom-6"
+      >
+        <Glyph name="add" />
+        Apply leave
+      </Link>
     </>
   );
 }

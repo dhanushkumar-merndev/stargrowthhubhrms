@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SWRConfig } from "swr";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HolidayCalendar, LeaveApply, LeaveBalances } from "@/components/screens/leave";
+import { HolidayCalendar, LeaveApply, LeaveBalances, leaveYearLabel } from "@/components/screens/leave";
 import { SessionProvider } from "@/lib/session";
 import { ctx, fail, mockFetch, ok } from "./helpers";
 
@@ -55,13 +55,21 @@ async function fillRange(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("Leave balances", () => {
-  it("shows balances, an unpaid no-limit type and the meter", async () => {
+  it("labels leave years that do not start in January", () => {
+    expect(leaveYearLabel(2026)).toBe("2026");
+    expect(leaveYearLabel(2026, 4)).toBe("Apr 2026 – Mar 2027");
+  });
+
+  it("shows days left, the unpaid chip and the history heading", async () => {
     mockFetch({ ...base(), "/rpc/list_my_requests": () => ok([]) });
     wrap(<LeaveBalances />);
-    expect(await screen.findByText("10.5 days")).toBeInTheDocument();
-    expect(screen.getByText("No limit")).toBeInTheDocument();
-    expect(screen.getByRole("meter", { name: "Casual Leave used" })).toHaveAttribute("aria-valuenow", "13");
-    expect(screen.getByText("No leave yet")).toBeInTheDocument();
+    expect(await screen.findByText("10.5")).toBeInTheDocument();
+    expect(screen.getByText(/days left/)).toBeInTheDocument();
+    expect(screen.getByText("Unpaid")).toBeInTheDocument();
+    expect(screen.getByText("Leave year 2026")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Leave history" })).toBeInTheDocument();
+    expect(screen.getByText("No leave requests yet.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Apply leave" })).toHaveAttribute("href", "/leave/apply");
   });
 
   it("moves between leave years", async () => {
@@ -74,7 +82,7 @@ describe("Leave balances", () => {
   it("empty allocation and history errors are separate", async () => {
     mockFetch({ ...base(), "/rpc/get_leave_balances": () => ok({ leave_year: 2026, leave_year_start_month: 1, balances: [] }), "/rpc/list_my_requests": () => fail(500, "INTERNAL", "Boom") });
     wrap(<LeaveBalances />);
-    expect(await screen.findByText("No leave set up")).toBeInTheDocument();
+    expect(await screen.findByText("No leave types yet")).toBeInTheDocument();
     expect(await screen.findByText("Boom")).toBeInTheDocument();
   });
 });
