@@ -63,6 +63,7 @@ export function actionScopes(c: Caps): { scope: Scope; label: string; art: strin
   if (c.isAdmin) {
     admin.push({ label: "Organization", subtitle: "Name, time zone and support contact", href: "/admin/organization", art: "location_city", tile: lav });
     admin.push({ label: "Offices", subtitle: "Locations, radius and office network", href: "/admin/offices", art: "location", tile: lav });
+    admin.push({ label: "Leave types", subtitle: "Add or activate paid, medical and unpaid leave", href: "/admin/leave-policies?tab=types", art: "beach", tile: cyan });
     admin.push({ label: "Weekly off (Saturdays)", subtitle: "Which Saturdays are off", href: "/admin/leave-policies?tab=holidays", art: "weekend", tile: cyan });
     admin.push({ label: "Background jobs", subtitle: "Health of scheduled maintenance", href: "/admin/jobs", art: "build_circle", tile: lav });
   }
@@ -151,6 +152,7 @@ export function exploreModules(c: Caps): Module[] {
     if (c.isHrOrAdmin) a.push({ label: "Outside work & WFH", href: "/admin/outside-work" });
     if (c.canMasterData || c.canDraftPolicy) a.push({ label: "Shifts", href: "/admin/shifts" });
     if (c.canDraftPolicy) a.push({ label: "Leave & holidays", href: "/admin/leave-policies" });
+    if (c.isAdmin) a.push({ label: "Leave types", href: "/admin/leave-policies?tab=types" });
     if (c.isAdmin) a.push({ label: "Weekly off (Saturdays)", href: "/admin/leave-policies?tab=holidays" });
     if (c.canDraftPolicy) a.push({ label: "Company policies", href: "/policies" });
     if (c.canManageAccess) a.push({ label: "Roles", href: "/admin/roles" });

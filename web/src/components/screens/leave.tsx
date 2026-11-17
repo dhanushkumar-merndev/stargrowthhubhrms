@@ -329,6 +329,22 @@ export function LeaveApply({ editId, now = new Date() }: { editId?: string; now?
           types.error ? <ErrorState message={msg(types.error, "Could not load leave types.")} onRetry={() => types.mutate()} /> : <LoadingState />
         ) : !editable ? (
           <Banner tone="warning">This request can no longer be edited ({stateOf(existing.data!.state).label.toLowerCase()}).</Banner>
+        ) : types.data.length === 0 ? (
+          <>
+            <EmptyState
+              art="leave"
+              title="No leave types available"
+              body={isAdmin ? "Add or activate a leave type before applying for leave." : "Ask your Admin to add or activate a leave type, then refresh this list."}
+            />
+            {isAdmin && (
+              <Link href="/admin/leave-policies?tab=types" className="inline-flex min-h-12 items-center justify-center font-semibold text-primary">
+                Manage leave types
+              </Link>
+            )}
+            <Button variant="outlined" onClick={() => types.mutate()}>
+              Refresh leave types
+            </Button>
+          </>
         ) : (
           <form noValidate onSubmit={submit} className="flex flex-col gap-4">
             {error && <Banner>{error}</Banner>}

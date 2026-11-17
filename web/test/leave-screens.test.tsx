@@ -87,6 +87,33 @@ describe("Leave balances", () => {
   });
 });
 
+describe("Leave type setup", () => {
+  it.each(["employee", "admin"] as const)("explains an empty type list to %s instead of showing an unusable form", async (role) => {
+    mockFetch(base(role, { "/rpc/list_leave_types": () => ok([]) }));
+    wrap(<LeaveApply now={NOW} />);
+    expect(await screen.findByText("No leave types available")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send request" })).not.toBeInTheDocument();
+    if (role === "admin") {
+      expect(await screen.findByRole("link", { name: "Manage leave types" })).toHaveAttribute("href", "/admin/leave-policies?tab=types");
+    } else {
+      expect(screen.getByText(/Ask your Admin to add or activate a leave type/)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Manage leave types" })).not.toBeInTheDocument();
+    }
+  });
+
+  it("reloads types after an Admin activates one", async () => {
+    let available = false;
+    mockFetch(base("employee", { "/rpc/list_leave_types": () => ok(available ? [LOP] : []) }));
+    wrap(<LeaveApply now={NOW} />);
+    await screen.findByText("No leave types available");
+    available = true;
+    await userEvent.click(screen.getByRole("button", { name: "Refresh leave types" }));
+    await userEvent.selectOptions(await screen.findByLabelText("Leave type"), "lop");
+    expect(screen.getByLabelText("Leave type")).toHaveValue("lop");
+    expect(screen.getByRole("button", { name: "Send request" })).toBeInTheDocument();
+  });
+});
+
 describe("Apply for leave", () => {
   it("clearing a date does not crash and hides the slot pickers", async () => {
     const user = userEvent.setup();

@@ -25,6 +25,14 @@ describe("three-role RBAC in the menus", () => {
     for (const x of ["Organization", "Offices", "Annual archive", "Google Sheet", "Audit history", "Roles"]) expect(l).toContain(x);
     expect(actionScopes(caps(ctx("admin"))).map((s) => s.scope)).toEqual(["user", "hr", "admin"]);
   });
+  it("Admin can open leave type management directly from Action and Explore", () => {
+    expect(actionScopes(caps(ctx("admin"))).find((s) => s.scope === "admin")?.items).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: "Leave types", href: "/admin/leave-policies?tab=types" })]),
+    );
+    expect(exploreModules(caps(ctx("admin"))).find((m) => m.id === "admin")?.actions).toContainEqual({ label: "Leave types", href: "/admin/leave-policies?tab=types" });
+    expect(labels("employee")).not.toContain("Leave types");
+    expect(labels("hr")).not.toContain("Leave types");
+  });
   it("audit is visible to HR with the scoped permission", () => {
     expect(caps(ctx("hr", { permissions: ["audit.scoped"] })).canAudit).toBe(true);
   });
