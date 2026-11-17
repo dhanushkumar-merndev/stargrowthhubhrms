@@ -42,6 +42,7 @@ import { Avatar, FileViewer } from "../files";
 import { Banner, Button, EmptyState, ErrorState, KeyValue, LoadingState, PageTitle, PillTabs, SectionCard, Sheet, StatusChip, TextArea, TextField, cx } from "../ui";
 import { withReauth } from "../reauth";
 import { type Saved, Select, SheetForm, activeOpts, useAction } from "../forms";
+import { EmployeeMonth } from "./employee-month";
 import { type DocItem, DocumentList, RemoveSheet, RenameSheet, SalaryCard, UploadDocumentSheet } from "./payroll";
 
 const msg = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
@@ -356,7 +357,7 @@ interface EmployeeFiles {
   title_max: number;
 }
 
-type Tab = "details" | "pay" | "files" | "more";
+type Tab = "details" | "attendance" | "pay" | "files" | "more";
 type SheetKind = "work" | "private" | "status" | "access" | "reset" | "team" | "office" | "shift" | "salary" | "leave" | "exception" | "doc" | null;
 
 const current = <T extends History>(rows: T[]) => rows.find((r) => r.to == null) ?? rows[0];
@@ -394,6 +395,7 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
   const shift = current(e.shifts);
   const tabs: { id: Tab; label: string }[] = [
     { id: "details", label: "Details" },
+    ...(c.canOrgReports ? [{ id: "attendance" as Tab, label: "Attendance" }] : []),
     ...(e.can_manage_payroll ? [{ id: "pay" as Tab, label: "Pay" }] : []),
     { id: "files", label: "Files" },
     { id: "more", label: "More" },
@@ -427,6 +429,8 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
           </div>
         </SectionCard>
         <PillTabs label="Sections" tabs={tabs} value={tab} onChange={setTab} />
+
+        {tab === "attendance" && <EmployeeMonth employeeId={e.id} today={today} canSeePay={e.can_manage_payroll} />}
 
         {tab === "details" && (
           <>

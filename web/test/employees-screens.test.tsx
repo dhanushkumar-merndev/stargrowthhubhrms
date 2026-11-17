@@ -289,6 +289,36 @@ describe("Employee detail", () => {
     await waitFor(() => expect(calls.find((c) => c.path === "/rpc/set_employee_salary")?.body).toEqual({ p_employee_id: "e2", p_fields: { monthly_salary: 35000, effective_from: "2026-11-01" }, p_reason: "Appraisal", p_expected_version: 7 }));
   });
 
+  it("Attendance tab: days, hours, lates and the salary estimate for a month", async () => {
+    const user = userEvent.setup();
+    const month = {
+      month: "2026-11-01", counted_to: "2026-11-14", days_in_month: 30, worked_days: 9, worked_seconds: 9 * 8.5 * 3600, workdays_so_far: 10,
+      present_days: 9, late_days: 5, excused_late_days: 1, late_penalty_days: 1, lates_until_next_cut: 3,
+      unpaid_with_permission_days: 0, unpaid_without_permission_days: 1, paid_leave_days: 0, medical_leave_days: 0, outside_days: 0, wfh_days: 0,
+      cut_days: 2, monthly_salary: 30000, currency: "INR", per_day_amount: 1000, estimated_deduction: 2000, estimated_pay: 28000,
+    };
+    const calls = mockFetch(routes({ "/rpc/get_month_summary": () => ok(month) }));
+    wrap(<EmployeeDetail id="e2" now={NOW} />);
+    await user.click(await screen.findByRole("tab", { name: "Attendance" }));
+    expect(await screen.findByText("9 of 10 workdays")).toBeInTheDocument();
+    expect(screen.getByText("76h 30m")).toBeInTheDocument();
+    expect(screen.getByText(/3 more until the next cut/)).toBeInTheDocument();
+    expect(screen.getByText("Estimated pay")).toBeInTheDocument();
+    expect(screen.getByText("₹28,000")).toBeInTheDocument();
+    expect(calls.find((c) => c.path === "/rpc/get_month_summary")!.body).toEqual({ p_employee_id: "e2", p_month: "2026-11-01" });
+    expect(screen.getByRole("button", { name: "Next month" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Previous month" }));
+    await waitFor(() => expect(calls.filter((c) => c.path === "/rpc/get_month_summary").at(-1)!.body).toEqual({ p_employee_id: "e2", p_month: "2026-10-01" }));
+  });
+
+  it("Attendance tab without a salary asks for one", async () => {
+    const user = userEvent.setup();
+    mockFetch(routes({ "/rpc/get_month_summary": () => ok({ month: "2026-11-01", counted_to: "2026-11-14", days_in_month: 30, present_days: 0, late_days: 0, excused_late_days: 0, late_penalty_days: 0, lates_until_next_cut: 4, unpaid_with_permission_days: 0, unpaid_without_permission_days: 0, paid_leave_days: 0, medical_leave_days: 0, outside_days: 0, wfh_days: 0, cut_days: 0, monthly_salary: null }) }));
+    wrap(<EmployeeDetail id="e2" now={NOW} />);
+    await user.click(await screen.findByRole("tab", { name: "Attendance" }));
+    expect(await screen.findByText(/No monthly salary is set/)).toBeInTheDocument();
+  });
+
   it("own record: no reset, deactivate or access change", async () => {
     mockFetch({ ...session("hr"), "/rpc/get_employee": () => ok(detail({ id: "e1" })) });
     wrap(<EmployeeDetail id="e1" now={NOW} />);

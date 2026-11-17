@@ -95,6 +95,8 @@ export function sourceLabel(source: string | null | undefined): string {
       return "Outside work (assigned by HR/Admin)";
     case "wfh":
       return "Work from home (approved request)";
+    case "device":
+      return "Attendance machine";
     default:
       return "Location verified";
   }
