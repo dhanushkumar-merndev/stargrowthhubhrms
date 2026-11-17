@@ -260,6 +260,21 @@ describe("tabs", () => {
     expect(screen.queryByRole("link", { name: /Organization/ })).toBeNull();
   });
 
+  it("Action rows show paid leave left, requests waiting and reviews waiting", async () => {
+    mockFetch({
+      "/rpc/get_session_context": () => ok(ctx("hr")),
+      "/rpc/get_home_summary": () => ok({ pending_reviews: 4 }),
+      "/rpc/get_leave_balances": () => ok({ balances: [{ available_units: 9 }, { available_units: 4 }, { available_units: null }], leave_year: 2026, leave_year_start_month: 1 }),
+      "/rpc/list_my_requests": () => ok([{ id: "a", kind: "leave", state: "submitted" }, { id: "b", kind: "late", state: "under_review" }, { id: "c", kind: "wfh", state: "approved" }]),
+    });
+    wrap(<Action />);
+    expect(await screen.findByText("6.5 days of paid leave left")).toBeInTheDocument();
+    expect(await screen.findByText("2 waiting for approval")).toBeInTheDocument();
+    await userEvent.click((await screen.findAllByRole("tab"))[1]);
+    expect(await screen.findByText("4 waiting for your decision")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Review requests/ })).toHaveTextContent("4");
+  });
+
   it("Home greets by first name and shows the office clock", async () => {
     mockFetch({ "/rpc/get_session_context": () => ok(ctx("employee")) });
     wrap(<Home now={new Date("2026-11-14T03:30:00Z")} />);
