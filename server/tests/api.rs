@@ -1616,7 +1616,6 @@ async fn someone_elses_passkey_cannot_punch_for_me() {
 struct Dev {
     status: StatusCode,
     text: String,
-    date: Option<String>,
 }
 
 impl T {
@@ -1642,16 +1641,10 @@ impl T {
             .await
             .unwrap();
         let status = res.status();
-        let date = res
-            .headers()
-            .get(header::DATE)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         Dev {
             status,
             text: String::from_utf8_lossy(&bytes).into_owned(),
-            date,
         }
     }
 
@@ -1708,17 +1701,8 @@ async fn iclock_handshake_and_gate_edges() {
     let r = t.dget(&format!("/iclock/cdata?SN={sn}&options=all")).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     assert!(r.text.starts_with(&format!("GET OPTION FROM: {sn}\n")));
-    // The machine sets its clock from Date: it carries the org's wall-clock time.
-    let date = chrono::NaiveDateTime::parse_from_str(
-        r.date.as_deref().expect("machine replies carry Date"),
-        "%a, %d %b %Y %H:%M:%S GMT",
-    )
-    .unwrap();
-    let local = (chrono::Utc::now() + chrono::Duration::minutes(330)).naive_utc();
-    assert!(
-        (local - date).num_seconds().abs() <= 5,
-        "Date {date} vs local {local}"
-    );
+    // The machine adds TimeZone to the UTC time it syncs from (org is Asia/Kolkata).
+    assert!(r.text.contains("TimeZone=330\n"), "{}", r.text);
     assert!(r.text.contains("TransFlag=1110101000\n") && r.text.contains("ATTLOGStamp=0\n"));
     let r = t
         .dget(&format!("/iclock/cdata.aspx?SN={sn}&pushver=2.4.1"))

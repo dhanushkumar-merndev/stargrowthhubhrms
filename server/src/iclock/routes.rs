@@ -228,19 +228,14 @@ pub async fn handle(
     } else {
         return not_found();
     };
-    let mut res = result.unwrap_or_else(|Transient| unavailable());
-    if res.status() == StatusCode::OK {
-        stamp_local_date(&mut res, &dbh.pool, &ctx.serial).await;
-    }
-    res
+    result.unwrap_or_else(|Transient| unavailable())
 }
 
-/// The machines set their clock from the HTTP `Date` header of every reply,
-/// read as local time (a machine left on UTC was 5 h 30 m behind and undid
-/// any SET OPTION DateTime within seconds). So machine replies carry the
-/// organisation's wall-clock time in `Date`. Nothing else reads this header.
-async fn stamp_local_date(res: &mut Response, pool: &sqlx::PgPool, serial: &str) {
-    let offset: Option<i32> = sqlx::query_scalar(
+/// The organisation's UTC offset (seconds) for a machine, for the TimeZone
+/// option. The machines add it to the UTC time they sync from; without it
+/// they sit on UTC (5 h 30 m behind in production).
+async fn org_offset_seconds(pool: &sqlx::PgPool, serial: &str) -> Option<i32> {
+    sqlx::query_scalar(
         "select extract(epoch from (now() at time zone o.timezone) - (now() at time zone 'UTC'))::int \
            from hrms.attendance_devices d join hrms.organizations o on o.id = d.org_id where d.serial = $1",
     )
@@ -248,12 +243,7 @@ async fn stamp_local_date(res: &mut Response, pool: &sqlx::PgPool, serial: &str)
     .fetch_optional(pool)
     .await
     .ok()
-    .flatten();
-    if let Some(v) =
-        offset.and_then(|s| HeaderValue::from_str(&p::local_http_date(chrono::Utc::now(), s)).ok())
-    {
-        res.headers_mut().insert(header::DATE, v);
-    }
+    .flatten()
 }
 
 async fn handle_get(ctx: &Ctx<'_>, endpoint: Endpoint, q: &[(String, String)]) -> R<Response> {
@@ -268,7 +258,8 @@ async fn handle_get(ctx: &Ctx<'_>, endpoint: Endpoint, q: &[(String, String)]) -
             photo: g["photo_stamp"].as_i64().unwrap_or(0),
             oplog: g["oplog_stamp"].as_i64().unwrap_or(0),
         };
-        return Ok(ok(p::build_options(&ctx.serial, c, pushver)));
+        let offset = org_offset_seconds(ctx.pool, &ctx.serial).await;
+        return Ok(ok(p::build_options(&ctx.serial, c, pushver, offset)));
     }
     let meta = json!({ "firmware": p::firmware_from_info(param(q, &["INFO", "info"])) });
     if endpoint == Endpoint::Getrequest {

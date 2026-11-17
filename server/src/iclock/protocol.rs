@@ -518,7 +518,22 @@ pub struct Cursors {
 /// firmware (`pushver`) gets named TransFlags; older gets the bit string
 /// 1 AttLog 2 OpLog 3 AttPhoto 4 EnrollFP 5 EnrollUser 6 FPImag 7 ChgUser
 /// 8 ChgFP 9 FACE 10 UserPic = 1110101000.
-pub fn build_options(serial: &str, c: Cursors, pushver: Option<&str>) -> String {
+/// TimeZone for the options reply: whole hours as hours ("8"), anything else
+/// in minutes ("330" for India), the form reported to work for half-hour zones.
+pub fn timezone_option(offset_s: i32) -> String {
+    if offset_s % 3600 == 0 {
+        format!("TimeZone={}", offset_s / 3600)
+    } else {
+        format!("TimeZone={}", offset_s / 60)
+    }
+}
+
+pub fn build_options(
+    serial: &str,
+    c: Cursors,
+    pushver: Option<&str>,
+    offset_s: Option<i32>,
+) -> String {
     let flags = if pushver.is_some() {
         "TransFlag=TransData AttLog\tOpLog\tAttPhoto\tEnrollUser\tChgUser"
     } else {
@@ -538,16 +553,11 @@ pub fn build_options(serial: &str, c: Cursors, pushver: Option<&str>) -> String 
         "Realtime=1".into(),
         "Encrypt=0".into(),
     ]
+    .into_iter()
+    .chain(offset_s.map(timezone_option))
+    .collect::<Vec<String>>()
     .join("\n")
         + "\n"
-}
-
-/// An HTTP date (RFC 7231 form) showing local wall-clock time: UTC shifted by
-/// `offset_s`, labelled GMT because that is how the machines read it.
-pub fn local_http_date(now: chrono::DateTime<chrono::Utc>, offset_s: i32) -> String {
-    (now + chrono::Duration::seconds(i64::from(offset_s)))
-        .format("%a, %d %b %Y %H:%M:%S GMT")
-        .to_string()
 }
 
 pub fn ack_lines(n: usize) -> String {
@@ -827,7 +837,8 @@ mod tests {
             photo: 2,
             oplog: 7,
         };
-        let legacy = build_options("ABC", c, None);
+        let legacy = build_options("ABC", c, None, None);
+        assert!(!legacy.contains("TimeZone="));
         assert!(legacy.starts_with("GET OPTION FROM: ABC\n"));
         let bits = legacy.split("TransFlag=").nth(1).unwrap()[..10].to_owned();
         assert_eq!(bits, "1110101000");
@@ -839,7 +850,8 @@ mod tests {
                 && legacy.contains("OPERLOGStamp=7\n")
                 && legacy.contains("ATTPHOTOStamp=2\n")
         );
-        let modern = build_options("ABC", c, Some("2.4.1"));
+        let modern = build_options("ABC", c, Some("2.4.1"), Some(19_800));
+        assert!(modern.contains("\nTimeZone=330\n"));
         assert!(
             modern.contains("TransFlag=TransData AttLog\tOpLog\tAttPhoto\tEnrollUser\tChgUser\n")
         );
@@ -936,15 +948,11 @@ mod tests {
     }
 
     #[test]
-    fn local_http_date_shifts_to_wall_clock() {
-        let utc = chrono::DateTime::parse_from_rfc3339("2026-11-17T10:43:21Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        assert_eq!(
-            local_http_date(utc, 19_800),
-            "Tue, 17 Nov 2026 16:13:21 GMT"
-        );
-        assert_eq!(local_http_date(utc, 0), "Tue, 17 Nov 2026 10:43:21 GMT");
+    fn timezone_option_whole_hours_or_minutes() {
+        assert_eq!(timezone_option(19_800), "TimeZone=330");
+        assert_eq!(timezone_option(28_800), "TimeZone=8");
+        assert_eq!(timezone_option(-18_000), "TimeZone=-5");
+        assert_eq!(timezone_option(0), "TimeZone=0");
     }
 
     #[test]
