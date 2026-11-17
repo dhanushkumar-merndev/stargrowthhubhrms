@@ -32,17 +32,20 @@ const detail = (over: Record<string, unknown> = {}) => ({
 const session = (role: "employee" | "hr" | "admin") => ({ "/rpc/get_session_context": () => ok(ctx(role)) });
 
 describe("My requests", () => {
-  it("lists, filters by state and shows the empty text per filter", async () => {
+  it("lists, filters by kind and status, and shows the empty text per status", async () => {
     const calls = mockFetch({ ...session("employee"), "/rpc/list_my_requests": (b) => ok((b as { p_state: string | null }).p_state ? [] : [row(1), row(2, { kind: "wfh", leave_type: null, state: "approved", units: null })]) });
     wrap(<MyRequests />);
     expect(await screen.findByText("Casual Leave")).toBeInTheDocument();
-    expect(screen.getByText("Work from home")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Work from home/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Casual Leave/ })).toHaveAttribute("href", "/requests/r1");
-    await userEvent.click(screen.getByRole("tab", { name: "Completed" }));
-    expect(await screen.findByText("Nothing completed yet")).toBeInTheDocument();
-    expect(calls.some((c) => c.path === "/rpc/list_my_requests" && (c.body as { p_state: string }).p_state === "completed")).toBe(true);
-    await userEvent.click(screen.getByRole("tab", { name: "Open" }));
-    expect(await screen.findByText("Nothing open")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Work from home" }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/rpc/list_my_requests" && (c.body as { p_kind: string }).p_kind === "wfh")).toBe(true));
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
+    await userEvent.click(screen.getByRole("button", { name: "Completed" }));
+    expect(await screen.findByText("No completed requests")).toBeInTheDocument();
+    expect(screen.getByText("Approved, not approved and cancelled requests appear here.")).toBeInTheDocument();
+    expect(calls.some((c) => c.path === "/rpc/list_my_requests" && (c.body as { p_state: string; p_kind: string }).p_state === "completed" && (c.body as { p_kind: string }).p_kind === "wfh")).toBe(true);
+    expect(screen.getByRole("button", { name: "Filters, 1 active" })).toBeInTheDocument();
   });
 
   it("pages with the keyset cursor and stops on a short page", async () => {

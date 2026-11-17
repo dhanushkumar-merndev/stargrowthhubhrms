@@ -15,7 +15,9 @@ import {
   type RequestEvent,
   type RequestRow,
   KIND_ART,
-  MY_FILTERS,
+  MY_KINDS,
+  MY_STATES,
+  myEmptyTitle,
   REVIEW_KINDS,
   appendPage,
   currentPayload,
@@ -37,6 +39,7 @@ import {
 import { caps } from "@/lib/roles";
 import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
+import { Glyph } from "../glyphs";
 import { Art, Banner, Button, EmptyState, ErrorState, KeyValue, LoadingState, PageTitle, PillTabs, SectionCard, Sheet, StatusChip, TextArea, cx } from "../ui";
 
 const LIMIT = 25;
@@ -250,27 +253,64 @@ function ReasonSheet({
 
 /* ───────────────────────── My requests ───────────────────────── */
 
-type MyFilter = (typeof MY_FILTERS)[number]["id"];
+type MyKind = (typeof MY_KINDS)[number]["id"];
 
 export function MyRequests() {
-  const [filter, setFilter] = useState<MyFilter>("");
-  const paged = usePaged("list_my_requests", { p_state: filter || null }, "p_before_created_at", (r) => r.created_at);
+  const [kind, setKind] = useState<MyKind>("");
+  const [state, setState] = useState<string>("");
+  const [sheet, setSheet] = useState(false);
+  const paged = usePaged("list_my_requests", { p_kind: kind || null, p_state: state || null }, "p_before_created_at", (r) => r.created_at);
   return (
     <>
-      <PageTitle title="My requests" back="/explore" />
-      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
-        <PillTabs label="Filter" tabs={MY_FILTERS} value={filter} onChange={setFilter} />
+      <PageTitle
+        title="My requests"
+        back="/explore"
+        action={
+          <button
+            type="button"
+            onClick={() => setSheet(true)}
+            aria-label={state ? "Filters, 1 active" : "Filters"}
+            className="relative grid size-12 place-items-center rounded-full"
+          >
+            <Glyph name="filter_list" />
+            {state && <span className="absolute right-2 top-2 grid size-4 place-items-center rounded-full bg-primary text-[10px] font-bold text-white">1</span>}
+          </button>
+        }
+      />
+      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page md:max-w-3xl lg:max-w-5xl">
+        <PillTabs label="Request type" tabs={MY_KINDS} value={kind} onChange={setKind} />
         <List
           paged={paged}
           href={(r) => `/requests/${r.id}`}
-          empty={
-            <EmptyState
-              title={filter === "" ? "No requests yet" : filter === "completed" ? "Nothing completed yet" : "Nothing open"}
-              body="Leave, corrections, work from home and late excuses you send show up here."
-            />
-          }
+          empty={<EmptyState art="assignment" title={myEmptyTitle(state)} body={state === "completed" ? "Approved, not approved and cancelled requests appear here." : ""} />}
         />
       </div>
+      {sheet && (
+        <Sheet title="Filters" onClose={() => setSheet(false)}>
+          <fieldset>
+            <legend className="mb-2 text-title-sm font-semibold">Status</legend>
+            <div className="flex flex-wrap gap-2">
+              {MY_STATES.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  aria-pressed={state === s.id}
+                  onClick={() => {
+                    setState(s.id);
+                    setSheet(false);
+                  }}
+                  className={cx(
+                    "min-h-10 rounded-full border px-4 text-body-md font-semibold",
+                    state === s.id ? "border-primary bg-attendance-card text-primary" : "border-border bg-surface text-text",
+                  )}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+        </Sheet>
+      )}
     </>
   );
 }

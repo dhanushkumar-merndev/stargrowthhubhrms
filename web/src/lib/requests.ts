@@ -210,11 +210,32 @@ export function appendPage<T extends { id: string }>(shown: T[], page: T[]): T[]
   return shown.concat(page.filter((r) => !seen.has(r.id)));
 }
 
-export const MY_FILTERS = [
+/** my_requests_screen.dart: kind pills along the top… */
+export const MY_KINDS = [
   { id: "", label: "All" },
-  { id: "active", label: "Open" },
-  { id: "completed", label: "Completed" },
+  { id: "leave", label: "Leave" },
+  { id: "correction", label: "Corrections" },
+  { id: "wfh", label: "Work from home" },
+  { id: "late_excuse", label: "Late" },
+  { id: "bank_details", label: "Bank" },
 ] as const;
+
+/** …and a Status filter sheet behind the filter button. */
+export const MY_STATES = [
+  { id: "", label: "All" },
+  { id: "active", label: "Active" },
+  { id: "returned", label: "Returned" },
+  { id: "completed", label: "Completed" },
+  { id: "approved", label: "Approved" },
+  { id: "rejected", label: "Not approved" },
+  { id: "cancelled", label: "Cancelled" },
+] as const;
+
+export function myEmptyTitle(state: string): string {
+  if (!state) return "No requests yet";
+  const label = MY_STATES.find((s) => s.id === state)?.label ?? state;
+  return `No ${label.toLowerCase()} requests`;
+}
 
 export const REVIEW_KINDS = [
   { id: "", label: "All" },
