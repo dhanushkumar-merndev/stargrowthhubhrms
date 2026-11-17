@@ -9,12 +9,13 @@ import { ApiError, newOperationId, rpc } from "@/lib/api";
 import { dayLabel, todayIn } from "@/lib/attendance";
 import { uploadFile } from "@/lib/files";
 import { type DirectoryRow, type Paged, type PrivateKey, type Profile, type OrgStructure, PRIVATE_FIELDS, privateErrors, privatePatch } from "@/lib/people";
-import { roleLabel } from "@/lib/roles";
+import { caps, roleLabel } from "@/lib/roles";
 import { stateOf } from "@/lib/requests";
 import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
 import { Avatar, FilePicker } from "../files";
-import { Banner, Button, EmptyState, ErrorState, KeyValue, LoadingState, PageTitle, SectionCard, Sheet, StatusChip, TextField, cx } from "../ui";
+import { Glyph } from "../glyphs";
+import { Art, Banner, Button, EmptyState, ErrorState, KeyValue, LoadingState, PageTitle, SectionCard, Sheet, StatusChip, TextField, cx } from "../ui";
 
 const msg = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
 
@@ -40,84 +41,114 @@ export function ProfileScreen({ now = new Date() }: { now?: Date }) {
   const p = q.data;
   const pending = p.profile_request && ["submitted", "under_review", "returned", "draft"].includes(p.profile_request.state) ? p.profile_request : null;
 
+  const canEditWork = caps(context).canMasterData;
+  const hasPrivate = PRIVATE_FIELDS.some((f) => String(p.private?.[f.key] ?? "").trim() !== "");
+  const settingsLink = (
+    <Link href="/settings" className="inline-flex min-h-12 items-center gap-1.5 rounded-full px-3 text-[15px] font-semibold text-primary">
+      <Art name="settings" size={20} />
+      Settings
+    </Link>
+  );
+
   return (
     <>
-      <PageTitle title="My profile" back="/explore" />
-      <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
+      <PageTitle title="My profile" back="/explore" action={settingsLink} />
+      <div className="mx-auto flex max-w-xl flex-col gap-4 p-page md:max-w-3xl lg:max-w-5xl">
         {notice && <Banner tone="success">{notice}</Banner>}
         <SectionCard>
           <div className="flex items-center gap-4">
             <Avatar name={p.name} versionId={p.avatar_file_version_id} size={72} />
             <div className="min-w-0 flex-1">
-              <p className="text-title-lg font-semibold">{p.name}</p>
+              <p className="text-title-lg font-medium">{p.name}</p>
               <p className="text-body-md text-text-secondary">
-                {p.code} · {p.designation ?? roleLabel(p.role)}
+                {p.code}
+                {p.designation ? ` · ${p.designation}` : ""}
               </p>
-              <div className="mt-1 flex flex-wrap gap-1.5">
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
                 <StatusChip label={roleLabel(p.role)} tone="info" />
                 {p.position_label === "manager" && <StatusChip label="Manager" tone="neutral" />}
               </div>
+              <button type="button" onClick={() => setPhoto(true)} className="mt-1 inline-flex min-h-10 items-center gap-1.5 text-[15px] font-semibold text-primary">
+                <Art name="photo_camera" size={19} />
+                {p.avatar_file_version_id ? "Change photo" : "Add photo"}
+              </button>
             </div>
           </div>
-          <Button variant="text" className="mt-2" onClick={() => setPhoto(true)}>
-            {p.avatar_file_version_id ? "Change photo" : "Add photo"}
-          </Button>
-        </SectionCard>
-
-        <SectionCard>
-          <h2 className="mb-2 text-title-sm font-semibold">Work</h2>
-          <KeyValue k="Team" v={p.team?.name ?? "—"} />
-          <KeyValue k="Department" v={p.department?.name ?? "—"} />
-          <KeyValue k="Office" v={p.office?.name ?? "—"} />
-          <KeyValue k="Manager" v={p.manager?.name ?? "—"} />
-          <KeyValue k="Joined" v={p.join_date ? dayLabel(p.join_date) : "—"} />
-          <KeyValue k="Work email" v={p.business_email ?? "—"} />
-          <KeyValue k="Work phone" v={p.business_phone ?? "—"} />
-          {p.shift && (
-            <>
-              <KeyValue k="Shift" v={`${p.shift.name} · ${hhmm(p.shift.start_local)}–${hhmm(p.shift.end_local)}`} />
-              <KeyValue k="Working days" v={weekdays(p.shift.weekly_mask)} />
-            </>
-          )}
-          <p className="mt-2 text-body-sm text-text-secondary">HR keeps these up to date. Ask HR if something is wrong.</p>
         </SectionCard>
 
         <SectionCard>
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-title-sm font-semibold">Personal</h2>
-            {!editing && (
-              <Button variant="text" onClick={() => setEditing(true)}>
-                {pending ? "Edit request" : "Request a change"}
-              </Button>
+            <h2 className="text-title-sm font-semibold">Work</h2>
+            {canEditWork && context && (
+              <Link href={`/employees/${context.employee.id}`} className="inline-flex min-h-10 items-center gap-1 px-2 font-semibold text-primary">
+                Edit
+              </Link>
             )}
           </div>
-          {pending && (
-            <div className="mb-3">
-              <Banner tone="info">
-                Change request: {stateOf(pending.state).label.toLowerCase()}.{" "}
-                <Link href={`/requests/${pending.id}`} className="font-semibold underline">
-                  View
+          {p.department && <KeyValue k="Department" v={p.department.name} />}
+          {p.team && <KeyValue k="Team" v={p.team.name} />}
+          {p.manager && <KeyValue k="Reports to" v={p.manager.name} />}
+          <KeyValue k="Office" v={p.office?.name ?? "Not assigned"} />
+          <KeyValue k="Shift" v={p.shift ? `${p.shift.name} · ${hhmm(p.shift.start_local)}–${hhmm(p.shift.end_local)}` : "Not assigned"} />
+          {p.shift && <KeyValue k="Working days" v={weekdays(p.shift.weekly_mask)} />}
+          <KeyValue k="Joined" v={p.join_date ? dayLabel(p.join_date) : "—"} />
+          {p.business_email && <KeyValue k="Work email" v={p.business_email} />}
+          {p.business_phone && <KeyValue k="Work phone" v={p.business_phone} />}
+          {!canEditWork && <p className="mt-2 text-body-sm text-text-secondary">Ask HR or Admin to change your work details.</p>}
+        </SectionCard>
+
+        <SectionCard>
+          <div className="flex items-center justify-between">
+            <h2 className="text-title-sm font-semibold">Personal details</h2>
+            {!editing &&
+              (pending ? (
+                <Link href={`/requests/${pending.id}`} className="inline-flex min-h-10 items-center px-2 font-semibold text-primary">
+                  View request
                 </Link>
-              </Banner>
+              ) : (
+                <Button variant="text" onClick={() => setEditing(true)}>
+                  {hasPrivate ? "Edit" : "Add"}
+                </Button>
+              ))}
+          </div>
+          <p className="text-body-sm text-text-secondary">Visible only to you, HR and Admin.</p>
+          {pending && (
+            <div className="mt-2 rounded-row bg-warning-soft p-3 text-body-md">
+              {pending.state === "returned"
+                ? "Changes were returned. Open the request to fix and resubmit them."
+                : `Your proposed changes are ${stateOf(pending.state).label.toLowerCase()}. The approved details below stay active until approval.`}
+              {!editing && (
+                <Button variant="text" className="mt-1" onClick={() => setEditing(true)}>
+                  Edit request
+                </Button>
+              )}
             </div>
           )}
-          {editing ? (
-            <PrivateForm
-              profile={p}
-              today={today}
-              onCancel={() => setEditing(false)}
-              onSaved={async () => {
-                setEditing(false);
-                setNotice("Change request sent to HR.");
-                await q.mutate();
-              }}
-            />
-          ) : (
-            PRIVATE_FIELDS.map((f) => {
-              const v = p.private?.[f.key];
-              return <KeyValue key={f.key} k={f.label} v={v ? (f.key === "date_of_birth" ? dayLabel(String(v)) : String(v)) : "—"} />;
-            })
-          )}
+          <div className="mt-2">
+            {editing ? (
+              <PrivateForm
+                profile={p}
+                today={today}
+                onCancel={() => setEditing(false)}
+                onSaved={async () => {
+                  setEditing(false);
+                  setNotice("Change request sent to HR.");
+                  await q.mutate();
+                }}
+              />
+            ) : hasPrivate ? (
+              PRIVATE_FIELDS.map((f) => {
+                const v = p.private?.[f.key];
+                return v ? <KeyValue key={f.key} k={f.label} v={f.key === "date_of_birth" ? dayLabel(String(v)) : String(v)} /> : null;
+              })
+            ) : (
+              <button type="button" onClick={() => setEditing(true)} className="flex w-full items-center gap-3 rounded-row bg-background px-3 py-4 text-left">
+                <Art name="person_add" size={24} />
+                <span className="flex-1">Add your phone, email and emergency contact</span>
+                <Glyph name="chevron_right" />
+              </button>
+            )}
+          </div>
         </SectionCard>
       </div>
       {photo && (

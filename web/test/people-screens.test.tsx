@@ -38,13 +38,17 @@ describe("My profile", () => {
     expect(await screen.findByText("Bengaluru HQ")).toBeInTheDocument();
     expect(screen.getByText("Mon, Tue, Wed, Thu, Fri")).toBeInTheDocument();
     expect(screen.getByText("General · 10:00–19:00")).toBeInTheDocument();
+    expect(screen.getByText("Visible only to you, HR and Admin.")).toBeInTheDocument();
+    expect(screen.getByText("Ask HR or Admin to change your work details.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
     expect(screen.getByText("98765 43210")).toBeInTheDocument();
   });
 
   it("an open change request is linked and edited in place", async () => {
     mockFetch({ ...session(), "/rpc/get_my_profile": () => ok(profile({ profile_request: { id: "r9", state: "submitted", version: 2 } })) });
     wrap(<ProfileScreen now={NOW} />);
-    expect(await screen.findByRole("link", { name: "View" })).toHaveAttribute("href", "/requests/r9");
+    expect(await screen.findByRole("link", { name: "View request" })).toHaveAttribute("href", "/requests/r9");
+    expect(screen.getByText(/The approved details below stay active until approval/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit request" })).toBeInTheDocument();
   });
 
@@ -52,7 +56,7 @@ describe("My profile", () => {
     const user = userEvent.setup();
     const calls = mockFetch({ ...session(), "/rpc/get_my_profile": () => ok(profile()), "/rpc/save_profile_details_request": () => ok({ id: "r1" }) });
     wrap(<ProfileScreen now={NOW} />);
-    await user.click(await screen.findByRole("button", { name: "Request a change" }));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
     await user.click(screen.getByRole("button", { name: "Send to HR" }));
     expect(await screen.findByText("Nothing changed.")).toBeInTheDocument();
     const email = screen.getByLabelText("Personal email");
@@ -73,7 +77,7 @@ describe("My profile", () => {
     const user = userEvent.setup();
     mockFetch({ ...session(), "/rpc/get_my_profile": () => ok(profile()), "/rpc/save_profile_details_request": () => fail(409, "STALE_VERSION") });
     wrap(<ProfileScreen now={NOW} />);
-    await user.click(await screen.findByRole("button", { name: "Request a change" }));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
     await user.type(screen.getByLabelText("Address"), "12 MG Road");
     await user.click(screen.getByRole("button", { name: "Send to HR" }));
     expect(await screen.findByText(/changed since you opened this/)).toBeInTheDocument();
