@@ -8,7 +8,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
-import { type Dashboard, type DayPeople, hoursLabel, pct, readUsage, shortcutsFor, topShortcuts, weekday } from "@/lib/dashboard";
+import { type Dashboard, type DayPeople, hoursLabel, pct, shortcutsFor, weekday } from "@/lib/dashboard";
 import { niceTime } from "@/lib/punch-day";
 import { useSession } from "@/lib/session";
 import { minutesLabel } from "@/lib/tasks";
@@ -164,7 +164,7 @@ export function Home({ now }: { now?: Date }) {
           {d?.team && <TeamCard t={d.team} bar={Boolean(d.org)} />}
           {d?.org && <OrgToday o={d.org} />}
           {d?.org && <OrgWeek o={d.org} />}
-          <MostUsed />
+          <Shortcuts />
           <div className="lg:col-span-2">
             <CelebrationsCard />
           </div>
@@ -798,18 +798,13 @@ function WorkCard({ d }: { d: Dashboard }) {
   );
 }
 
-function MostUsed() {
+function Shortcuts() {
   const { caps } = useSession();
-  const [usage, setUsage] = useState<Record<string, number>>({});
-  useEffect(() => {
-    const id = setTimeout(() => setUsage(readUsage()), 0);
-    return () => clearTimeout(id);
-  }, []);
-  const list = topShortcuts(shortcutsFor(caps), usage, 8);
+  const list = shortcutsFor(caps);
   return (
-    <section aria-label="Most used" className="lg:col-span-2">
+    <section aria-label="Shortcuts" className="lg:col-span-2">
       <div className="flex items-center justify-between">
-        <h2 className="text-title-sm font-semibold">Most used</h2>
+        <h2 className="text-title-sm font-semibold">Shortcuts</h2>
         <Link href="/action" className="text-body-md font-semibold text-primary">
           All actions
         </Link>

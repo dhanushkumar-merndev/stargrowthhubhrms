@@ -1,5 +1,5 @@
-// Home dashboard: the data shape of get_dashboard, the shortcut catalogue and
-// "most used" ordering (counted per browser; it is a convenience only).
+// Home dashboard: the data shape of get_dashboard and the fixed shortcut
+// catalogue shared by the sidebar and dashboard.
 
 import type { Caps } from "./roles";
 
@@ -61,44 +61,9 @@ const HR: Shortcut[] = [
   { href: "/attendance/outdoor", label: "Outdoor", art: "location" },
 ];
 
+/** Stable for each role; visiting a page never changes its position or visibility. */
 export function shortcutsFor(c: Pick<Caps, "isHrOrAdmin">): Shortcut[] {
   return c.isHrOrAdmin ? [...EVERYONE.slice(0, 4), ...HR, ...EVERYONE.slice(4)] : EVERYONE;
-}
-
-const KEY = "hrms.usage.v1";
-
-export function readUsage(): Record<string, number> {
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    const v = raw ? (JSON.parse(raw) as unknown) : {};
-    return v && typeof v === "object" ? (v as Record<string, number>) : {};
-  } catch {
-    return {};
-  }
-}
-
-const pathOf = (href: string) => href.split("?")[0];
-
-/** Counts a visit when the path is one of the shortcuts (exact page, not sub-pages). */
-export function recordVisit(path: string, all: Shortcut[] = [...EVERYONE, ...HR]): void {
-  const hit = all.find((s) => pathOf(s.href) === path);
-  if (!hit) return;
-  try {
-    const u = readUsage();
-    u[hit.href] = Math.min((u[hit.href] ?? 0) + 1, 1_000_000);
-    window.localStorage.setItem(KEY, JSON.stringify(u));
-  } catch {
-    // private mode / storage blocked: ordering stays the default
-  }
-}
-
-/** The n most used shortcuts; ties (and never used) keep the default order. */
-export function topShortcuts(list: Shortcut[], usage: Record<string, number>, n: number): Shortcut[] {
-  return list
-    .map((s, i) => ({ s, i, c: usage[s.href] ?? 0 }))
-    .sort((a, b) => b.c - a.c || a.i - b.i)
-    .slice(0, n)
-    .map((x) => x.s);
 }
 
 export const pct = (part: number, total: number) => (total > 0 ? Math.round((part / total) * 100) : 0);

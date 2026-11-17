@@ -1,14 +1,13 @@
 "use client";
 
 // Signed-in frame. Phones keep the bottom tab bar (NavBar in the tabs layout);
-// tablets get an icon rail and desktops a sidebar with the tabs and the most
-// used pages. Every signed-in page sits inside it, so desktop navigation is
+// tablets get an icon rail and desktops a sidebar with tabs and fixed
+// shortcuts. Every signed-in page sits inside it, so desktop navigation is
 // never more than one click away.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { readUsage, recordVisit, shortcutsFor, topShortcuts, type Shortcut } from "@/lib/dashboard";
+import { shortcutsFor, type Shortcut } from "@/lib/dashboard";
 import { TABS, activeTab } from "@/lib/routing";
 import { useSession } from "@/lib/session";
 import { Art, cx } from "./ui";
@@ -23,7 +22,6 @@ export function bareFrame(path: string): boolean {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
-  useEffect(() => recordVisit(path), [path]);
   if (bareFrame(path)) return <>{children}</>;
   return (
     <div className="md:pl-20 lg:pl-64">
@@ -35,14 +33,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
 function SideNav({ path }: { path: string }) {
   const { caps, context } = useSession();
-  // Read after mount: the server render has no storage.
-  const [usage, setUsage] = useState<Record<string, number>>({});
-  useEffect(() => {
-    const id = setTimeout(() => setUsage(readUsage()), 0);
-    return () => clearTimeout(id);
-  }, [path]);
   const tab = TABS.some((t) => path === t.href || path.startsWith(t.href + "/")) ? activeTab(path) : -1;
-  const short = topShortcuts(shortcutsFor(caps), usage, 7);
+  const short = shortcutsFor(caps);
   const isOn = (s: Shortcut) => path === s.href.split("?")[0];
   return (
     <nav aria-label="Sidebar" className="fixed inset-y-0 left-0 z-30 hidden w-20 flex-col overflow-y-auto border-r border-border bg-surface pt-[env(safe-area-inset-top)] md:flex lg:w-64">
@@ -60,9 +52,9 @@ function SideNav({ path }: { path: string }) {
           </li>
         ))}
       </ul>
-      <p className="mt-5 hidden px-6 text-body-sm font-semibold uppercase tracking-wide text-text-secondary lg:block">Most used</p>
+      <p className="mt-5 hidden px-6 text-body-sm font-semibold uppercase tracking-wide text-text-secondary lg:block">Shortcuts</p>
       <div className="mx-4 my-3 border-t border-border lg:hidden" />
-      <ul className="flex flex-col gap-1 px-2 pb-6 lg:px-3" aria-label="Most used">
+      <ul className="flex flex-col gap-1 px-2 pb-6 lg:px-3" aria-label="Shortcuts">
         {short.map((s) => (
           <li key={s.href}>
             <NavItem href={s.href} label={s.label} art={s.art} on={isOn(s)} />

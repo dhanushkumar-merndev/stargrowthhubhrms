@@ -1,10 +1,10 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Gate } from "@/components/gate";
 import { Home } from "@/components/screens/home";
 import { bareFrame } from "@/components/shell";
-import { type Dashboard, hoursLabel, pct, readUsage, recordVisit, shortcutsFor, topShortcuts } from "@/lib/dashboard";
+import { type Dashboard, hoursLabel, pct, shortcutsFor } from "@/lib/dashboard";
 import { SessionProvider } from "@/lib/session";
 import { ctx, mockFetch, ok } from "./helpers";
 
@@ -12,11 +12,13 @@ let path = "/home";
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }), usePathname: () => path, useSearchParams: () => new URLSearchParams() }));
 
 function wrap(ui: React.ReactNode) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      <SessionProvider>{ui}</SessionProvider>
-    </SWRConfig>,
-  );
+  return render(ui, {
+    wrapper: ({ children }) => (
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <SessionProvider>{children}</SessionProvider>
+      </SWRConfig>
+    ),
+  });
 }
 function memoryStorage(): Storage {
   const m = new Map<string, string>();
@@ -63,21 +65,6 @@ describe("dashboard helpers", () => {
     expect(hoursLabel(0)).toBe("0 h");
     expect(hoursLabel(90)).toBe("1.5 h");
     expect(hoursLabel(4800)).toBe("80 h");
-  });
-  it("counts visits to shortcut pages and orders by use", () => {
-    const list = shortcutsFor({ isHrOrAdmin: false });
-    expect(topShortcuts(list, readUsage(), 3).map((s) => s.label)).toEqual(["My punch", "Apply leave", "Tasks"]);
-    recordVisit("/payslips");
-    recordVisit("/payslips");
-    recordVisit("/work");
-    recordVisit("/work/123"); // sub-pages do not count
-    recordVisit("/nowhere");
-    expect(readUsage()).toEqual({ "/payslips": 2, "/work": 1 });
-    expect(topShortcuts(list, readUsage(), 3).map((s) => s.label)).toEqual(["Payslips", "Daily report", "My punch"]);
-  });
-  it("broken storage falls back to the default order", () => {
-    window.localStorage.setItem("hrms.usage.v1", "{not json");
-    expect(readUsage()).toEqual({});
   });
   it("HR shortcuts include the review pages", () => {
     expect(shortcutsFor({ isHrOrAdmin: true }).map((s) => s.href)).toEqual(expect.arrayContaining(["/approvals", "/attendance/fixes", "/devices"]));
@@ -139,7 +126,7 @@ describe("Home dashboard", () => {
     expect(screen.getByText("My team today")).toBeInTheDocument();
     expect(screen.getByText("2/5")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Share of people present on each of the last 7 days" })).toBeInTheDocument();
-    const used = screen.getByRole("region", { name: "Most used" });
+    const used = screen.getByRole("region", { name: "Shortcuts" });
     expect(within(used).getAllByRole("link").map((a) => a.getAttribute("href"))).toContain("/approvals");
   });
 
@@ -187,7 +174,7 @@ describe("Home dashboard", () => {
 });
 
 describe("sidebar", () => {
-  it("signed-in pages get the sidebar with tabs and most used pages", async () => {
+  it("signed-in pages get the sidebar with tabs and fixed shortcuts", async () => {
     path = "/tasks";
     mockFetch({ "/rpc/get_session_context": () => ok(ctx("hr")) });
     wrap(<Gate>tasks page</Gate>);
@@ -196,7 +183,6 @@ describe("sidebar", () => {
     expect(within(nav).getByRole("link", { name: "Home" })).toHaveAttribute("href", "/home");
     expect(within(nav).getByRole("link", { name: "Tasks" })).toHaveAttribute("aria-current", "page");
     expect(within(nav).getByRole("link", { name: "Review requests" })).toBeInTheDocument();
-    expect(readUsage()).toEqual({ "/tasks": 1 });
   });
   it("print pages have no sidebar", async () => {
     path = "/attendance/print";
@@ -204,5 +190,64 @@ describe("sidebar", () => {
     wrap(<Gate>printable</Gate>);
     expect(await screen.findByText("printable")).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Sidebar" })).not.toBeInTheDocument();
+  });
+});
+
+const EMPLOYEE_SHORTCUTS = ["/attendance/today", "/leave/apply", "/tasks", "/work", "/attendance", "/requests", "/payslips", "/holidays"];
+const STAFF_SHORTCUTS = ["/attendance/today", "/leave/apply", "/tasks", "/work", "/approvals", "/attendance/fixes", "/employees", "/devices", "/work?tab=team", "/attendance/outdoor", "/attendance", "/requests", "/payslips", "/holidays"];
+
+// Flush the old deferred usage read too, so these tests catch a reorder that
+// happens just after the initial render rather than passing on the first frame.
+const settled = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+const hrefs = (element: HTMLElement) => within(element).getAllByRole("link").map((a) => a.getAttribute("href"));
+
+describe("shortcut positions", () => {
+  it.each(["employee", "hr", "admin"] as const)("keeps sidebar links fixed for %s across page changes and reloads", async (role) => {
+    window.localStorage.setItem("hrms.usage.v1", JSON.stringify({ "/holidays": 40, "/devices": 30, "/requests": 20 }));
+    mockFetch({ "/rpc/get_session_context": () => ok(ctx(role)) });
+    const expected = role === "employee" ? EMPLOYEE_SHORTCUTS : STAFF_SHORTCUTS;
+    const sidebarLinks = () => screen.getByRole("list", { name: "Shortcuts" });
+    const view = wrap(<Gate>current page</Gate>);
+    await screen.findByText("current page");
+    await settled();
+    expect(hrefs(sidebarLinks())).toEqual(expected);
+
+    for (const next of ["/requests", "/holidays", "/tasks", "/home"]) {
+      path = next;
+      view.rerender(<Gate>current page</Gate>);
+      await settled();
+      expect(hrefs(sidebarLinks())).toEqual(expected);
+      if (next !== "/home") {
+        expect(within(sidebarLinks()).getAllByRole("link").find((a) => a.getAttribute("href") === next)).toHaveAttribute("aria-current", "page");
+      }
+    }
+
+    view.unmount();
+    window.localStorage.setItem("hrms.usage.v1", JSON.stringify({ "/payslips": 100 }));
+    wrap(<Gate>reloaded page</Gate>);
+    await screen.findByText("reloaded page");
+    await settled();
+    expect(hrefs(sidebarLinks())).toEqual(expected);
+  });
+
+  it.each(["employee", "hr", "admin"] as const)("keeps dashboard cards fixed for %s when visit history changes", async (role) => {
+    window.localStorage.setItem("hrms.usage.v1", JSON.stringify({ "/holidays": 40, "/devices": 30 }));
+    mockFetch({
+      "/rpc/get_session_context": () => ok(ctx(role)),
+      "/rpc/get_dashboard": () => ok(dash()),
+    });
+    const expected = role === "employee" ? EMPLOYEE_SHORTCUTS : STAFF_SHORTCUTS;
+    const cards = () => within(screen.getByRole("region", { name: "Shortcuts" })).getAllByRole("link").filter((a) => a.getAttribute("href") !== "/action").map((a) => a.getAttribute("href"));
+    const view = wrap(<Home now={new Date("2026-11-16T05:30:00Z")} />);
+    await screen.findByText("Hello Asha 👋");
+    await settled();
+    expect(cards()).toEqual(expected);
+
+    view.unmount();
+    window.localStorage.setItem("hrms.usage.v1", JSON.stringify({ "/requests": 100, "/payslips": 50 }));
+    wrap(<Home now={new Date("2026-11-16T05:30:00Z")} />);
+    await screen.findByText("Hello Asha 👋");
+    await settled();
+    expect(cards()).toEqual(expected);
   });
 });
