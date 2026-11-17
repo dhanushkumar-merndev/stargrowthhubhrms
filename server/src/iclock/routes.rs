@@ -228,7 +228,32 @@ pub async fn handle(
     } else {
         return not_found();
     };
-    result.unwrap_or_else(|Transient| unavailable())
+    let mut res = result.unwrap_or_else(|Transient| unavailable());
+    if res.status() == StatusCode::OK {
+        stamp_local_date(&mut res, &dbh.pool, &ctx.serial).await;
+    }
+    res
+}
+
+/// The machines set their clock from the HTTP `Date` header of every reply,
+/// read as local time (a machine left on UTC was 5 h 30 m behind and undid
+/// any SET OPTION DateTime within seconds). So machine replies carry the
+/// organisation's wall-clock time in `Date`. Nothing else reads this header.
+async fn stamp_local_date(res: &mut Response, pool: &sqlx::PgPool, serial: &str) {
+    let offset: Option<i32> = sqlx::query_scalar(
+        "select extract(epoch from (now() at time zone o.timezone) - (now() at time zone 'UTC'))::int \
+           from hrms.attendance_devices d join hrms.organizations o on o.id = d.org_id where d.serial = $1",
+    )
+    .bind(serial)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    if let Some(v) =
+        offset.and_then(|s| HeaderValue::from_str(&p::local_http_date(chrono::Utc::now(), s)).ok())
+    {
+        res.headers_mut().insert(header::DATE, v);
+    }
 }
 
 async fn handle_get(ctx: &Ctx<'_>, endpoint: Endpoint, q: &[(String, String)]) -> R<Response> {

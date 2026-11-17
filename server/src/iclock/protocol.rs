@@ -542,6 +542,14 @@ pub fn build_options(serial: &str, c: Cursors, pushver: Option<&str>) -> String 
         + "\n"
 }
 
+/// An HTTP date (RFC 7231 form) showing local wall-clock time: UTC shifted by
+/// `offset_s`, labelled GMT because that is how the machines read it.
+pub fn local_http_date(now: chrono::DateTime<chrono::Utc>, offset_s: i32) -> String {
+    (now + chrono::Duration::seconds(i64::from(offset_s)))
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
+}
+
 pub fn ack_lines(n: usize) -> String {
     format!("OK: {n}")
 }
@@ -925,6 +933,18 @@ mod tests {
             parse_command_results("ID=1234567890123456789&Return=0").is_empty(),
             "id too long"
         );
+    }
+
+    #[test]
+    fn local_http_date_shifts_to_wall_clock() {
+        let utc = chrono::DateTime::parse_from_rfc3339("2026-11-17T10:43:21Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            local_http_date(utc, 19_800),
+            "Tue, 17 Nov 2026 16:13:21 GMT"
+        );
+        assert_eq!(local_http_date(utc, 0), "Tue, 17 Nov 2026 10:43:21 GMT");
     }
 
     #[test]

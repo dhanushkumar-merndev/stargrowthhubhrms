@@ -63,6 +63,8 @@ const relay = {
         "content-type": upstream.headers.get("content-type") ?? "text/plain; charset=utf-8",
         "content-length": String(bytes.byteLength),
         "cache-control": "no-store",
+        // The machine sets its clock from Date; the API sends local time there.
+        ...(upstream.headers.get("date") ? { date: upstream.headers.get("date") } : {}),
       },
     });
   },
