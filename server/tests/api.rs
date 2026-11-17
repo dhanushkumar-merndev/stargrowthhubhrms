@@ -3612,10 +3612,13 @@ async fn two_step_sign_in_end_to_end() {
     assert_eq!(r.code(), "INVALID_CODE", "{}", r.body);
     let r = t.login("M001", NEW_PW).await;
     assert!(r.session_cookie().is_some());
+    // Remember the exact code used to enable, so the replay check below
+    // cannot drift into a fresh window when the 30 s step rolls over.
+    let enable_code = code(now_step() - 1);
     let r = t
         .post(
             "/v1/auth/two-step/enable",
-            json!({ "code": code(now_step() - 1) }),
+            json!({ "code": enable_code }),
             Some(&hr),
         )
         .await;
@@ -3663,7 +3666,7 @@ async fn two_step_sign_in_end_to_end() {
     );
     // The code used to enable cannot be replayed.
     assert_eq!(
-        step2(&challenge, &code(now_step() - 1)).await.code(),
+        step2(&challenge, &enable_code).await.code(),
         "INVALID_CODE"
     );
     let r = step2(&challenge, &code(now_step())).await;
