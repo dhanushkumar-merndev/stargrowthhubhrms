@@ -98,7 +98,7 @@ describe("Roles and step-up password", () => {
     // Cannot change yourself.
     expect(screen.getAllByRole("button", { name: "Change" })).toHaveLength(1);
     await userEvent.click(screen.getByRole("button", { name: "Change" }));
-    await userEvent.selectOptions(within(dialog()).getByLabelText("Role"), "admin");
+    await userEvent.click(within(dialog()).getByRole("radio", { name: /^Admin/ }));
     await userEvent.type(within(dialog()).getByLabelText("Reason"), "New office lead");
     await userEvent.click(within(dialog()).getByRole("button", { name: "Save" }));
     const pw = await screen.findByLabelText("Password");
@@ -117,7 +117,7 @@ describe("Roles and step-up password", () => {
     const calls = mockFetch({ ...session(), "/rpc/list_access_grants": () => ok([g("e1", "Asha Rao", "admin"), g("e2", "Ravi K", "employee")]), "/rpc/set_employee_access": () => fail(403, "REAUTH_REQUIRED") });
     wrap(<Roles />);
     await userEvent.click(await screen.findByRole("button", { name: "Change" }));
-    await userEvent.selectOptions(within(screen.getByRole("dialog")).getByLabelText("Role"), "admin");
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("radio", { name: /^Admin/ }));
     await userEvent.type(within(screen.getByRole("dialog")).getByLabelText("Reason"), "Needed");
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
     await screen.findByLabelText("Password");
@@ -130,7 +130,7 @@ describe("Roles and step-up password", () => {
     wrap(<Roles />);
     await userEvent.click(await screen.findByRole("button", { name: "Change" }));
     expect(within(dialog()).getByText("This is the only active Admin.")).toBeInTheDocument();
-    await userEvent.selectOptions(within(dialog()).getByLabelText("Role"), "employee");
+    await userEvent.click(within(dialog()).getByRole("radio", { name: /^Employee/ }));
     await userEvent.type(within(dialog()).getByLabelText("Reason"), "Leaving");
     await userEvent.click(within(dialog()).getByRole("button", { name: "Save" }));
     expect(await within(dialog()).findByText(/This is the last Admin/)).toBeInTheDocument();

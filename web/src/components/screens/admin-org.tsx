@@ -728,6 +728,18 @@ export interface AccessGrant {
 
 type RoleTab = "all" | "admin" | "hr" | "employee";
 
+const ROLE_HELP = [
+  "Employee — own attendance, leave, requests, salary and payslips.",
+  "HR — everything an Employee can, plus: add or remove Employees and HR, salaries, payslips, approve leave, work from home, late arrivals and corrections, attendance reports.",
+  "Admin — everything HR can, plus: Admins, organisation setup, offices, shifts and archives.",
+  "Manager / Member is only a label shown on the profile. It gives no extra access.",
+];
+const ROLE_TILES = [
+  { id: "employee", label: "Employee", sub: "Own attendance, leave and salary" },
+  { id: "hr", label: "HR", sub: "People, salaries, payslips and approvals" },
+  { id: "admin", label: "Admin", sub: "Everything, including setup" },
+] as const;
+
 export function Roles() {
   const { context } = useSession();
   const c = caps(context);
@@ -746,7 +758,14 @@ export function Roles() {
       {() => (
         <Page title="Roles and access">
           {notice && <Banner tone="success">{notice}</Banner>}
-          <p className="text-body-md text-text-secondary">Admins manage everything. HR manages people, leave, payroll and policies. Everyone else is an Employee.</p>
+          <details className="rounded-card border border-border bg-surface p-card">
+            <summary className="cursor-pointer text-title-sm font-semibold">What each role can do</summary>
+            <div className="mt-2 flex flex-col gap-2 text-body-md text-text-secondary">
+              {ROLE_HELP.map((t) => (
+                <p key={t}>{t}</p>
+              ))}
+            </div>
+          </details>
           <PillTabs
             label="Role"
             tabs={[
@@ -758,9 +777,9 @@ export function Roles() {
             value={tab}
             onChange={setTab}
           />
-          <TextField label="Search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <TextField label="Search by name or ID" type="search" value={search} onChange={(e) => setSearch(e.target.value)} />
           {rows.length === 0 ? (
-            <EmptyState art="groups" title="Nobody here" />
+            <EmptyState art="groups" title={search.trim() ? "No one matches" : "Nobody here"} />
           ) : (
             <ul className="flex flex-col gap-2">
               {rows.map((g) => (
@@ -825,12 +844,29 @@ function RoleSheet({ grant, isAdmin, lastAdmin, onClose, onSaved }: { grant: Acc
       }}
     >
       {lastAdmin && <Banner tone="warning">This is the only active Admin.</Banner>}
-      <Select
-        label="Role"
-        value={role}
-        onChange={setRole}
-        options={[{ value: "employee", label: "Employee" }, { value: "hr", label: "HR" }, ...(isAdmin ? [{ value: "admin", label: "Admin" }] : [])]}
-      />
+      <p className="text-body-sm text-text-secondary">{grant.role === "admin" && !isAdmin ? "Only an Admin can change an Admin." : "Choose what they can do in the app."}</p>
+      <fieldset className="flex flex-col gap-2">
+        <legend className="sr-only">Role</legend>
+        {ROLE_TILES.map((t) => {
+          const locked = t.id === "admin" && !isAdmin;
+          return (
+            <label
+              key={t.id}
+              className={cx(
+                "flex min-h-14 items-center gap-3 rounded-row border p-3",
+                role === t.id ? "border-primary bg-attendance-card" : "border-border bg-surface",
+                locked && "opacity-50",
+              )}
+            >
+              <input type="radio" name="role" value={t.id} checked={role === t.id} disabled={locked} onChange={() => setRole(t.id)} className="size-5 accent-primary" />
+              <span className="flex-1">
+                <span className="block font-semibold">{t.label}</span>
+                <span className="block text-body-sm text-text-secondary">{locked ? "Only an Admin can grant this" : t.sub}</span>
+              </span>
+            </label>
+          );
+        })}
+      </fieldset>
       <Select
         label="Label"
         value={label}
@@ -840,6 +876,7 @@ function RoleSheet({ grant, isAdmin, lastAdmin, onClose, onSaved }: { grant: Acc
           { value: "manager", label: "Manager" },
         ]}
       />
+      <p className="-mt-2 text-body-sm text-text-secondary">A label only. It gives no extra access.</p>
       <TextArea label="Reason" value={reason} onChange={setReason} maxLength={500} />
     </SheetForm>
   );
