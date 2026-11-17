@@ -3665,10 +3665,7 @@ async fn two_step_sign_in_end_to_end() {
         "CHALLENGE_EXPIRED"
     );
     // The code used to enable cannot be replayed.
-    assert_eq!(
-        step2(&challenge, &enable_code).await.code(),
-        "INVALID_CODE"
-    );
+    assert_eq!(step2(&challenge, &enable_code).await.code(), "INVALID_CODE");
     let r = step2(&challenge, &code(now_step())).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let signed_in = r.session_cookie().expect("session after the code");
