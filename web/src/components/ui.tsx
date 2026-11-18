@@ -4,7 +4,9 @@
 // dialogs.dart). Same sizes, radii and colours as the Android app.
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useId, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import { hasPreviousAppPage } from "@/lib/back-navigation";
 import { Glyph } from "./glyphs";
 
 export function cx(...c: (string | false | null | undefined)[]) {
@@ -18,18 +20,23 @@ export function Art({ name, size = 24, big = false, alt = "" }: { name: string; 
 }
 
 export function PageTitle({ title, back, action }: { title: string; back?: string | (() => void); action?: ReactNode }) {
+  const router = useRouter();
   return (
     <header className="sticky top-0 z-20 flex items-center gap-1 bg-surface px-4 py-4 pt-[max(16px,env(safe-area-inset-top))]">
-      {back !== undefined &&
-        (typeof back === "string" ? (
-          <Link href={back} aria-label="Back" className="-ml-2 grid size-12 place-items-center rounded-full text-text">
-            <Glyph name="arrow_back" />
-          </Link>
-        ) : (
-          <button type="button" onClick={back} aria-label="Back" className="-ml-2 grid size-12 place-items-center rounded-full text-text">
-            <Glyph name="arrow_back" />
-          </button>
-        ))}
+      {back !== undefined && (
+        <button
+          type="button"
+          aria-label="Back"
+          className="-ml-2 grid size-12 place-items-center rounded-full text-text"
+          onClick={() => {
+            if (typeof back === "function") back();
+            else if (hasPreviousAppPage()) router.back();
+            else router.replace(back);
+          }}
+        >
+          <Glyph name="arrow_back" />
+        </button>
+      )}
       <h1 className={cx("flex-1 text-headline-sm font-medium text-text", back === undefined && "pl-2")}>{title}</h1>
       {action}
     </header>

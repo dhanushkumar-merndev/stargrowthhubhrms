@@ -13,6 +13,7 @@ const csp = [
   "img-src 'self' data: blob:",
   "font-src 'self'",
   "connect-src 'self'",
+  "frame-src blob:",
   "worker-src 'self'",
   "manifest-src 'self'",
   "frame-ancestors 'none'",

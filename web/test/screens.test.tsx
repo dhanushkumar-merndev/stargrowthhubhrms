@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { usePathname } from "next/navigation";
 import { SWRConfig } from "swr";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import LoginPage from "@/app/login/page";
 import { Gate } from "@/components/gate";
 import { NavBar } from "@/components/nav-bar";
 import { Action } from "@/components/screens/action";
@@ -10,7 +11,10 @@ import { Explore } from "@/components/screens/explore";
 import { Home, dayPhase, firstName, orgClock } from "@/components/screens/home";
 import { LoginForm } from "@/components/screens/login-form";
 import { PasswordForm } from "@/components/screens/password-form";
+import { PolicyAcknowledgement } from "@/components/screens/policy-acknowledgement";
 import { Settings, deviceName } from "@/components/screens/settings";
+import { PageTitle } from "@/components/ui";
+import { trackBackNavigation } from "@/lib/back-navigation";
 import { SessionProvider } from "@/lib/session";
 import type { Phase } from "@/lib/routing";
 import { ctx, fail, mockFetch, ok } from "./helpers";
@@ -31,6 +35,7 @@ function wrap(ui: React.ReactNode, phase: Phase = "loading") {
 beforeEach(() => {
   nav.path = "/home";
   nav.replace.mockReset();
+  nav.back.mockReset();
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -53,7 +58,7 @@ describe("Gate", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
   it("forces a temporary password holder to /password-change", async () => {
-    mockFetch({ "/rpc/get_session_context": () => ok(ctx("employee", { must_change_password: true })) });
+    mockFetch({ "/rpc/get_session_context": () => ok(ctx("employee", { must_change_password: true, policy_acknowledged_at: null })) });
     wrap(<Gate>home</Gate>);
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/password-change"));
   });
@@ -67,6 +72,13 @@ describe("Gate", () => {
     wrap(<Gate>home content</Gate>);
     expect(await screen.findByText("home content")).toBeInTheDocument();
     expect(nav.replace).not.toHaveBeenCalled();
+  });
+  it("requires policy acknowledgement before showing the requested app page", async () => {
+    mockFetch({ "/rpc/get_session_context": () => ok(ctx("hr", { policy_acknowledged_at: null })) });
+    nav.path = "/employees";
+    wrap(<Gate>employee list</Gate>);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/policy-acknowledgement"));
+    expect(screen.queryByText("employee list")).toBeNull();
   });
   it("offers a retry when the API is unreachable, and recovers", async () => {
     let down = true;
@@ -101,7 +113,97 @@ describe("Gate", () => {
   });
 });
 
+describe("Policy acknowledgement", () => {
+  it("displays published policies and continues only after saving the employee's acknowledgement", async () => {
+    let acceptedAt: string | null = null;
+    const calls = mockFetch({
+      "/rpc/get_session_context": () => ok(ctx("employee", { policy_acknowledged_at: acceptedAt })),
+      "/rpc/get_company_policy_review": () => ok({
+        rules: ["Report to the office by the start of your assigned shift."],
+        documents: [{ record_id: "p1", file_version_id: "v1", title: "Attendance policy" }],
+        revision: "rev1",
+      }),
+      "/files/v1": () => [200, "%PDF-1.4"],
+      "/rpc/acknowledge_company_policies": () => ok({ accepted_at: (acceptedAt = "2026-11-18T03:00:00Z") }),
+    });
+    nav.path = "/policy-acknowledgement";
+    const view = wrap(<Gate><PolicyAcknowledgement /></Gate>);
+    expect(await screen.findByText("Report to the office by the start of your assigned shift.")).toBeVisible();
+    const button = screen.getByRole("button", { name: "Acknowledge and continue" });
+    expect(button).toBeDisabled();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("checkbox", { name: /I have read and acknowledge/ }));
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    const dialog = await screen.findByRole("dialog", { name: "Attendance policy" });
+    await within(dialog).findByRole("button", { name: "Download" });
+    expect(calls.some((call) => call.path === "/rpc/acknowledge_company_policies")).toBe(false);
+    await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    await user.click(button);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/home"));
+    expect(calls.find((call) => call.path === "/rpc/acknowledge_company_policies")?.body).toEqual({ p_revision: "rev1" });
+
+    view.unmount();
+    nav.replace.mockClear();
+    nav.path = "/home";
+    wrap(<Gate>home content</Gate>);
+    expect(await screen.findByText("home content")).toBeVisible();
+    expect(nav.replace).not.toHaveBeenCalled();
+  });
+
+  it("reloads the review and clears the checkbox if the policies change before submission", async () => {
+    let revision = "rev1";
+    mockFetch({
+      "/rpc/get_company_policy_review": () => ok({ rules: [`Office rules ${revision}`], documents: [], revision }),
+      "/rpc/acknowledge_company_policies": () => {
+        revision = "rev2";
+        return fail(409, "STALE_VERSION", "Company policies changed. Review the latest policies to continue.");
+      },
+    });
+    const user = userEvent.setup();
+    wrap(<PolicyAcknowledgement />, "mustAcknowledgePolicies");
+    await user.click(await screen.findByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "Acknowledge and continue" }));
+    expect(await screen.findByText("Office rules rev2")).toBeVisible();
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Acknowledge and continue" })).toBeDisabled();
+  });
+});
+
+describe("Page title Back", () => {
+  it("uses browser history after entering from Home, including after a query replacement", async () => {
+    const original = window.location.href;
+    window.history.replaceState(null, "", "/home");
+    const stopTracking = trackBackNavigation();
+    try {
+      window.history.pushState({ route: "leave" }, "", "/leave");
+      window.history.replaceState({ route: "leave" }, "", "/leave?year=2026");
+      render(<PageTitle title="Leave" back="/explore" />);
+      await userEvent.click(screen.getByRole("button", { name: "Back" }));
+      expect(nav.back).toHaveBeenCalledOnce();
+      expect(nav.replace).not.toHaveBeenCalled();
+    } finally {
+      stopTracking();
+      window.history.replaceState(null, "", original);
+    }
+  });
+
+  it("uses the section fallback when opening a shared page directly", async () => {
+    render(<PageTitle title="Employee" back="/employees" />);
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(nav.replace).toHaveBeenCalledWith("/employees");
+    expect(nav.back).not.toHaveBeenCalled();
+  });
+});
+
 describe("LoginForm", () => {
+  it("prefills only the validated employee ID from a shared sign-in link", async () => {
+    const page = await LoginPage({ searchParams: Promise.resolve({ employee_id: "emp0010" }) });
+    const calls = mockFetch({});
+    wrap(page, "signedOut");
+    expect(screen.getByLabelText("Employee ID")).toHaveValue("EMP0010");
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+    expect(calls).toHaveLength(0);
+  });
   it("validates locally before calling the server", async () => {
     const calls = mockFetch({});
     wrap(<LoginForm />, "signedOut");

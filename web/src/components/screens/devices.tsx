@@ -59,8 +59,10 @@ import {
 import { clock, todayIn } from "@/lib/attendance";
 import { useLive, type Conn } from "@/lib/live";
 import { caps } from "@/lib/roles";
+import { employeeSignInUrl } from "@/lib/routing";
 import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
+import { SignInShare } from "../sign-in-share";
 import { Banner, Button, EmptyState, ErrorState, LoadingState, PageTitle, SectionCard, Sheet, StatusChip, TextField, cx } from "../ui";
 
 
@@ -1340,12 +1342,15 @@ export function MachinePeople({ onAdded, now = new Date() }: { onAdded?: () => v
       {hired.length > 0 && (
         <SectionCard>
           <h3 className="text-title-sm font-semibold">Added</h3>
-          <p className="text-body-sm text-text-secondary">Give each person their ID and temporary password. Passwords are shown only now.</p>
+          <p className="text-body-sm text-text-secondary">Share each person&apos;s sign-in details privately before leaving this page.</p>
           <ul className="mt-2 divide-y divide-border" aria-label="Added people">
             {hired.map((h, i) => (
-              <li key={`${h.pin}-${i}`} className="flex flex-wrap items-center gap-x-3 py-2">
-                <span className="min-w-0 flex-1">{h.name} <span className="text-text-secondary">· PIN {h.pin}</span></span>
-                {h.error ? <span className="text-body-sm text-error">{h.error}</span> : <span className="font-mono">{h.code} · {h.password ?? "already existed"}</span>}
+              <li key={`${h.pin}-${i}`} className="flex flex-col gap-2 py-2">
+                <div className="flex flex-wrap items-center gap-x-3">
+                  <span className="min-w-0 flex-1">{h.name} <span className="text-text-secondary">· PIN {h.pin}</span></span>
+                  {h.error ? <span className="text-body-sm text-error">{h.error}</span> : <span className="font-mono">{h.code} · {h.password ?? "already existed"}</span>}
+                </div>
+                {h.code && <SignInShare code={h.code} name={h.name} password={h.password ?? undefined} />}
               </li>
             ))}
           </ul>
@@ -1353,7 +1358,10 @@ export function MachinePeople({ onAdded, now = new Date() }: { onAdded?: () => v
             variant="outlined"
             className="mt-2"
             onClick={() => {
-              const csv = toCsv([["Name", "Machine PIN", "Employee ID", "Temporary password"], ...hired.filter((h) => !h.error).map((h) => [h.name, h.pin, h.code, h.password ?? ""])]);
+              const rows = hired.filter((h) => !h.error).map((h) => [
+                h.name, h.pin, h.code, h.password, h.code ? employeeSignInUrl(window.location.origin, h.code) : "",
+              ]);
+              const csv = toCsv([["Name", "Machine PIN", "Employee ID", "Temporary password", "Sign-in link"], ...rows]);
               const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
               const a = document.createElement("a");
               a.href = url;

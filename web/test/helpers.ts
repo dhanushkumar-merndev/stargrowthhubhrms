@@ -10,6 +10,7 @@ export function ctx(role: "employee" | "hr" | "admin", extra: Partial<SessionCon
     permissions: [],
     must_change_password: false,
     credential_hold: false,
+    policy_acknowledged_at: "2026-11-18T04:30:00Z",
     permission_version: "v",
     ...extra,
   };

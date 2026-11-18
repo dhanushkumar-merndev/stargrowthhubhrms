@@ -1,6 +1,6 @@
 // Where a user may be, given their session phase (Android router.dart redirect).
 
-export type Phase = "loading" | "unreachable" | "signedOut" | "mustChangePassword" | "ready";
+export type Phase = "loading" | "unreachable" | "signedOut" | "mustChangePassword" | "mustAcknowledgePolicies" | "ready";
 
 /** Paths that render without a session check (static, offline shell). */
 const OPEN = ["/offline"];
@@ -16,8 +16,10 @@ export function redirectFor(phase: Phase, path: string): string | null {
       return path === "/login" ? null : "/login";
     case "mustChangePassword":
       return path === "/password-change" ? null : "/password-change";
+    case "mustAcknowledgePolicies":
+      return path === "/policy-acknowledgement" ? null : "/policy-acknowledgement";
     case "ready":
-      return path === "/" || path === "/login" || path === "/password-change" ? "/home" : null;
+      return path === "/" || path === "/login" || path === "/password-change" || path === "/policy-acknowledgement" ? "/home" : null;
   }
 }
 
@@ -38,6 +40,12 @@ export function employeeCodeError(raw: string): string | null {
   if (!code) return "Enter your employee ID";
   if (!/^[A-Z0-9-]{3,32}$/.test(code)) return "Use letters, digits or -";
   return null;
+}
+
+export function employeeSignInUrl(origin: string, code: string): string {
+  const url = new URL("/login", origin);
+  url.searchParams.set("employee_id", code);
+  return url.href;
 }
 
 /** HRMS password policy (mirrors server/src/auth/password.rs). */

@@ -109,6 +109,7 @@ describe("Employees list", () => {
 describe("Add employee", () => {
   it("HR cannot pick HR/Admin; a single team is chosen; the ID is automatic; the temporary password is shown once", async () => {
     const user = userEvent.setup();
+    const copy = vi.spyOn(navigator.clipboard, "writeText");
     const calls = mockFetch({
       ...session("hr"),
       "/rpc/list_org_structure": () => ok(structure),
@@ -141,6 +142,8 @@ describe("Add employee", () => {
     expect(sent.operation_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(calls.find((c) => c.path === "/rpc/update_employee")!.body).toEqual({ p_employee_id: "n1", p_patch: { designation: "Clerk" }, p_expected_version: 1 });
     expect(screen.getByRole("link", { name: "Open employee" })).toHaveAttribute("href", "/employees/n1");
+    await user.click(screen.getByRole("button", { name: "Copy sign-in details" }));
+    expect(copy).toHaveBeenCalledWith(expect.stringContaining(`Sign-in link: ${window.location.origin}/login?employee_id=EMP0010\nUsername (Employee ID): EMP0010\nTemporary password: Tmp-9x!k`));
   });
 
   it("a server error is shown; the account is not half-made on a details failure", async () => {
@@ -193,11 +196,16 @@ describe("Employee detail", () => {
 
   it("reset password shows the temporary password; a stale edit is explained", async () => {
     const user = userEvent.setup();
+    const copy = vi.spyOn(navigator.clipboard, "writeText");
     mockFetch(routes({ "/admin/users/e2/reset-password": () => ok({ employee_id: "e2", temporary_password: "New-77" }), "/rpc/update_employee": () => fail(409, "STALE_VERSION") }));
     wrap(<EmployeeDetail id="e2" now={NOW} />);
+    await user.click(await screen.findByRole("button", { name: "Copy sign-in details" }));
+    expect(copy).toHaveBeenLastCalledWith(expect.stringContaining("Sign in with your current HRMS password."));
     await user.click(await screen.findByRole("button", { name: "Reset password" }));
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reset password" }));
     expect(await screen.findByLabelText("Temporary password")).toHaveTextContent("New-77");
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Copy sign-in details" }));
+    expect(copy).toHaveBeenLastCalledWith(expect.stringContaining("Temporary password: New-77"));
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
     await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
     const dialog = screen.getByRole("dialog", { name: "Work details" });

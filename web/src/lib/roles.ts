@@ -10,6 +10,8 @@ export interface SessionContext {
   permissions: string[];
   must_change_password: boolean;
   credential_hold: boolean;
+  /** Null until accepted. Older servers omit this during a rolling deploy. */
+  policy_acknowledged_at?: string | null;
   permission_version: string;
 }
 

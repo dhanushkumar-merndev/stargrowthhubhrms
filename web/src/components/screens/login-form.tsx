@@ -6,12 +6,12 @@ import { employeeCodeError } from "@/lib/routing";
 import { useSession } from "@/lib/session";
 import { Art, Banner, Button, TextField } from "../ui";
 
-export function LoginForm() {
+export function LoginForm({ initialCode = "" }: { initialCode?: string }) {
   const { login, loginTwoStep, message } = useSession();
   const [challenge, setChallenge] = useState<string | null>(null);
   const [otp, setOtp] = useState("");
   const [recovery, setRecovery] = useState(false);
-  const [code, setCode] = useState("");
+  const [code, setCode] = useState(initialCode);
   const [password, setPassword] = useState("");
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);

@@ -36,11 +36,13 @@ import {
   toCsv,
 } from "@/lib/people";
 import { caps, roleLabel } from "@/lib/roles";
+import { employeeSignInUrl } from "@/lib/routing";
 import { useSession } from "@/lib/session";
 import { useRpc } from "@/lib/use-rpc";
 import { Avatar, FileViewer } from "../files";
 import { Banner, Button, EmptyState, ErrorState, KeyValue, LoadingState, PageTitle, PillTabs, SectionCard, Sheet, StatusChip, TextArea, TextField, cx } from "../ui";
 import { withReauth } from "../reauth";
+import { SignInShare } from "../sign-in-share";
 import { type Saved, Select, SheetForm, activeOpts, useAction } from "../forms";
 import { EmployeeMonth } from "./employee-month";
 import { type DocItem, DocumentList, RemoveSheet, RenameSheet, SalaryCard, UploadDocumentSheet } from "./payroll";
@@ -158,29 +160,16 @@ export function EmployeesList() {
 
 /* ───────────────────────── Temporary password ───────────────────────── */
 
-export function TempPassword({ code, password }: { code: string; password: string }) {
-  const [copied, setCopied] = useState(false);
+export function TempPassword({ code, name, password }: { code: string; name?: string; password: string }) {
   return (
     <div className="rounded-card border border-warning bg-warning-soft p-card">
       <p className="text-body-md">
-        Temporary password for <b>{code}</b>. It is shown only once — share it in person. They must change it at first sign-in.
+        Share these details privately with <b>{name ? `${name} (${code})` : code}</b>. This temporary password is shown once and must be changed at first sign-in.
       </p>
       <p className="my-2 select-all break-all font-mono text-title-lg" aria-label="Temporary password">
         {password}
       </p>
-      <Button
-        variant="outlined"
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(password);
-            setCopied(true);
-          } catch {
-            setCopied(false);
-          }
-        }}
-      >
-        {copied ? "Copied" : "Copy password"}
-      </Button>
+      <SignInShare code={code} name={name} password={password} />
     </div>
   );
 }
@@ -257,7 +246,7 @@ export function EmployeeNew({ now = new Date() }: { now?: Date }) {
         <div className="mx-auto flex max-w-xl md:max-w-3xl lg:max-w-5xl flex-col gap-4 p-page">
           <Banner tone="success">{done.code} can now sign in.</Banner>
           {warn && <Banner tone="warning">{warn}</Banner>}
-          {done.password ? <TempPassword code={done.code} password={done.password} /> : <Banner tone="info">This account already existed. Reset the password from the employee page if needed.</Banner>}
+          {done.password ? <TempPassword code={done.code} name={f.full_name.trim()} password={done.password} /> : <Banner tone="info">This account already existed. Reset the password from the employee page if needed.</Banner>}
           <Link href={`/employees/${done.id}`} className="inline-flex min-h-12 items-center justify-center rounded-button bg-primary font-semibold text-white">
             Open employee
           </Link>
@@ -471,6 +460,11 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
               </div>
               <KeyValue k="Role" v={roleLabel(e.role)} />
               <KeyValue k="Label" v={e.position_label === "manager" ? "Manager" : "Member"} />
+              {c.canViewEmployees && e.status === "active" && e.provisioning_state === "complete" && (
+                <div className="mt-2">
+                  <SignInShare key={e.code} code={e.code} name={e.name} />
+                </div>
+              )}
             </SectionCard>
             <SectionCard>
               <div className="mb-2 flex items-center justify-between">
@@ -786,7 +780,7 @@ function ResetSheet({ e, onClose }: { e: EmployeeDetailData; onClose: () => void
   if (pw)
     return (
       <Sheet title="Password reset" onClose={onClose}>
-        <TempPassword code={e.code} password={pw} />
+        <TempPassword code={e.code} name={e.name} password={pw} />
       </Sheet>
     );
   return (
@@ -949,6 +943,7 @@ const KIND_CHIP: Record<string, { label: string; tone: "success" | "info" | "neu
 interface ApplyResult {
   row: number;
   code: string;
+  name: string;
   ok: boolean;
   message: string;
   password?: string | null;
@@ -974,16 +969,16 @@ function download(name: string, text: string, type = "text/csv") {
 }
 
 export async function applyRow(r: ImportRow): Promise<ApplyResult> {
-  const code = r.values.code;
-  const base = { row: r.rowNumber, code };
+  const base = { row: r.rowNumber, code: r.values.code, name: r.values.name };
+  let password: string | null | undefined;
   try {
     let id = r.existing?.id ?? null;
-    let password: string | null | undefined;
     if (r.kind === "create") {
-      const fields: Record<string, string> = { employee_code: code, full_name: r.values.name, join_date: r.values.join_date, team_id: r.teamId!, office_id: r.officeId!, shift_id: r.shiftId!, role: r.role ?? "member" };
+      const fields: Record<string, string> = { employee_code: base.code, full_name: base.name, join_date: r.values.join_date, team_id: r.teamId!, office_id: r.officeId!, shift_id: r.shiftId!, role: r.role ?? "member" };
       if (r.departmentId) fields.department_id = r.departmentId;
       const res = await post<ProvisionResult>("/admin/users", { operation_id: newOperationId(), fields, device_pin: null, device_serial: null });
       id = res.data.employee_id;
+      base.code = res.data.employee_code ?? base.code;
       password = res.data.temporary_password;
       const after: Record<string, string> = {};
       if (r.values.designation) after.designation = r.values.designation;
@@ -1002,7 +997,7 @@ export async function applyRow(r: ImportRow): Promise<ApplyResult> {
     }
     return { ...base, ok: true, message: r.kind === "create" ? "Created" : "Updated", password };
   } catch (x) {
-    return { ...base, ok: false, message: msg(x, "Failed") };
+    return { ...base, ok: false, message: msg(x, "Failed"), password };
   }
 }
 
@@ -1108,10 +1103,13 @@ export function EmployeeImport() {
             </Banner>
             {passwords.length > 0 && (
               <SectionCard>
-                <p className="text-body-md">{passwords.length} new accounts have temporary passwords. Download them now — they are not shown again. Keep the file private and delete it after sharing.</p>
+                <p className="text-body-md">{passwords.length} new accounts have temporary passwords. Share each person&apos;s sign-in details privately before leaving this page.</p>
                 <Button
                   className="mt-2"
-                  onClick={() => download("temporary-passwords.csv", toCsv([["Employee ID", "Temporary password"], ...passwords.map((p) => [p.code, p.password])]))}
+                  onClick={() => {
+                    const rows = passwords.map((p) => [p.code, p.password, employeeSignInUrl(window.location.origin, p.code)]);
+                    download("temporary-passwords.csv", toCsv([["Employee ID", "Temporary password", "Sign-in link"], ...rows]));
+                  }}
                 >
                   Download passwords
                 </Button>
@@ -1119,8 +1117,9 @@ export function EmployeeImport() {
             )}
             <ul className="flex flex-col gap-1">
               {results.map((r) => (
-                <li key={r.row} className={cx("text-body-md", !r.ok && "text-error")}>
-                  Row {r.row} · {r.code}: {r.message}
+                <li key={r.row} className="flex flex-col gap-1 py-1">
+                  <p className={cx("text-body-md", !r.ok && "text-error")}>Row {r.row} · {r.code}: {r.message}</p>
+                  {r.password && <SignInShare code={r.code} name={r.name} password={r.password} />}
                 </li>
               ))}
             </ul>

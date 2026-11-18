@@ -1,5 +1,5 @@
 -- [web-hrms] Ported from ~/Documents/Projects/September/HRMS/hrms/supabase/tests/database/10_company_policies.sql
--- [web-hrms]   unchanged
+-- [web-hrms]   adds first sign-in policy acknowledgement coverage
 
 -- POL-001..003: everyone reads company policies; Admin and `policy.draft`
 -- holders (HR by default) rename and remove them; removal hides the policy,
@@ -65,9 +65,33 @@ select test.throws(format('select public.remove_employee_document(%L)', (select 
   'ACCESS_DENIED', 'POL-002 other organisation denied');
 
 -- POL-003 HR renames; Admin removes, which hides it and frees storage.
+select test.eq(public.get_session_context() -> 'data' ->> 'policy_acknowledged_at', null::text,
+               'new accounts start without a policy acknowledgement');
+select test.eq(public.get_company_policy_review() -> 'data' -> 'documents' -> 0 ->> 'title',
+               null::text, 'the review excludes policies from other organisations');
+select test.login('EMP01');
+select test.eq(public.get_company_policy_review() -> 'data' -> 'documents' -> 0 ->> 'title',
+               'Leave policy 2026', 'the review includes policies published for this employee');
+create temporary table earlier_review as select public.get_company_policy_review() -> 'data' ->> 'revision' as revision;
+
 select test.login('HR01');
 select test.eq(public.rename_employee_document((select id from pol), ' Leave policy 2027 ') -> 'data' ->> 'title',
   'Leave policy 2027', 'POL-003 HR renames a policy (trimmed)');
+select test.login('EMP01');
+select test.throws(format('select public.acknowledge_company_policies(%L)', (select revision from earlier_review)),
+                   'STALE_VERSION', 'an employee must acknowledge the policies they actually reviewed');
+create temporary table saved_acknowledgement as
+select public.acknowledge_company_policies(public.get_company_policy_review() -> 'data' ->> 'revision') -> 'data' ->> 'accepted_at' as accepted_at;
+select test.ok((select accepted_at is not null from saved_acknowledgement), 'the acknowledgement is timestamped');
+select test.eq(public.acknowledge_company_policies(null) -> 'data' ->> 'accepted_at',
+               (select accepted_at from saved_acknowledgement), 'retries return the same acknowledgement');
+
+select test.as_admin_db();
+select test.eq((select review -> 'documents' -> 0 ->> 'title' from hrms.policy_acknowledgements where employee_id = test.emp('EMP01')),
+               'Leave policy 2027', 'the acknowledgement preserves the reviewed policy version');
+select test.eq((select count(*) from hrms.audit_logs where actor_employee_id = test.emp('EMP01') and action = 'policy.acknowledged'),
+               1::bigint, 'the acknowledgement is audited once');
+
 select test.login('ADMIN01');
 create temporary table before as select pg_temp.used() as b;
 grant select on before to authenticated, service_role;
@@ -81,5 +105,10 @@ select test.throws(format('select public.remove_employee_document(%L)', (select 
   'ACCESS_DENIED', 'POL-003 removing twice is refused');
 select test.login('EMP01');
 select test.ok(pg_temp.listed((select id from pol)) is null, 'POL-003 hidden from employees too');
+select test.eq(public.get_session_context() -> 'data' ->> 'policy_acknowledged_at',
+               (select accepted_at from saved_acknowledgement), 'later sign-ins keep the acknowledgement even if policies change');
+select test.login('EMP02');
+select test.eq(public.get_session_context() -> 'data' ->> 'policy_acknowledged_at', null::text,
+               'each account has its own acknowledgement');
 
 rollback;

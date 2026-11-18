@@ -23,7 +23,8 @@ interface SessionState {
 const Ctx = createContext<SessionState | null>(null);
 
 export function phaseFor(ctx: SessionContext): Phase {
-  return ctx.must_change_password || ctx.credential_hold ? "mustChangePassword" : "ready";
+  if (ctx.must_change_password || ctx.credential_hold) return "mustChangePassword";
+  return ctx.policy_acknowledged_at === null ? "mustAcknowledgePolicies" : "ready";
 }
 
 export function SessionProvider({ children, initialPhase = "loading" }: { children: React.ReactNode; initialPhase?: Phase }) {

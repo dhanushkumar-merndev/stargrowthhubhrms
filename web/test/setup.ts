@@ -5,10 +5,10 @@ import { afterEach, vi } from "vitest";
 afterEach(() => cleanup());
 
 // next/navigation is mocked per test through these handles.
-export const nav = { path: "/home", replace: vi.fn(), push: vi.fn() };
+export const nav = { path: "/home", replace: vi.fn(), push: vi.fn(), back: vi.fn() };
 vi.mock("next/navigation", () => ({
   usePathname: () => nav.path,
-  useRouter: () => ({ replace: nav.replace, push: nav.push, back: vi.fn(), prefetch: vi.fn() }),
+  useRouter: () => ({ replace: nav.replace, push: nav.push, back: nav.back, prefetch: vi.fn() }),
 }));
 
 // jsdom has no object URLs; files are shown from them.
