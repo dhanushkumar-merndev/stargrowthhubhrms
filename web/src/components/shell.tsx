@@ -10,6 +10,7 @@ import { usePathname } from "next/navigation";
 import { shortcutsFor, type Shortcut } from "@/lib/dashboard";
 import { TABS, activeTab } from "@/lib/routing";
 import { useSession } from "@/lib/session";
+import { NotificationPrompt } from "./notification-prompt";
 import { Art, cx } from "./ui";
 
 const TAB_ART: Record<string, string> = { home: "home", bolt: "bolt", grid: "grid_view" };
@@ -27,6 +28,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="md:pl-20 lg:pl-64">
       <SideNav path={path} />
       {children}
+      <NotificationPrompt />
     </div>
   );
 }
