@@ -480,7 +480,9 @@ mod tests {
     fn tokens() {
         assert!(valid_token("dGVzdC10b2tlbg:APA91bH-abc_DEF0123456789"));
         assert!(!valid_token("short"));
-        assert!(!valid_token(r#"{"endpoint":"https://fcm.googleapis.com/x"}"#));
+        assert!(!valid_token(
+            r#"{"endpoint":"https://fcm.googleapis.com/x"}"#
+        ));
         assert!(!valid_token("has spaces in the token value"));
     }
 
