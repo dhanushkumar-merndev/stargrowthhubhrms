@@ -4,10 +4,18 @@
 // - Shows Web Push notifications. The payload is minimal (title, body, url);
 //   no salary or medical values are ever sent in a push.
 
-const VERSION = "v1";
+const VERSION = "v2";
 const STATIC_CACHE = `hrms-static-${VERSION}`;
 const OFFLINE_URL = "/offline";
-const PRECACHE = [OFFLINE_URL, "/icons/icon-192.png", "/favicon.png"];
+const PRECACHE = [OFFLINE_URL, "/icons/icon-192.png", "/icons/badge-96.png", "/favicon.png"];
+
+// One logo per notification. Android shows the small `badge` in the status
+// bar and header AND the large `icon` beside the text, so passing both shows
+// the logo twice: Android gets only the badge (a white silhouette, as Android
+// requires). Desktops ignore badges, so they get only the full-colour logo.
+const NOTIFICATION_IMAGE = /Android/i.test(self.navigator.userAgent)
+  ? { badge: "/icons/badge-96.png" }
+  : { icon: "/icons/icon-192.png" };
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(STATIC_CACHE).then((c) => c.addAll(PRECACHE)));
@@ -66,8 +74,7 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body: typeof data.body === "string" ? data.body : "",
-      icon: "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
+      ...NOTIFICATION_IMAGE,
       tag: typeof data.tag === "string" ? data.tag : undefined,
       data: { url: safePath(data.url) },
     }),
