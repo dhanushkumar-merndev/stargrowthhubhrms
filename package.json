@@ -12,8 +12,5 @@
     "typecheck": "pnpm --filter @web-hrms/web typecheck",
     "test": "cargo test",
     "fmt": "cargo fmt"
-  },
-  "dependencies": {
-    "pnpm": "^12.21.0"
   }
 }
