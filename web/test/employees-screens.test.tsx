@@ -85,14 +85,25 @@ describe("number helpers", () => {
 });
 
 describe("Employees list", () => {
-  it("HR sees Add and Import, the cap, and can switch to inactive people", async () => {
+  it("HR sees the cap and can filter for accounts pending setup or inactive employees", async () => {
     const user = userEvent.setup();
-    const calls = mockFetch({ ...session("hr"), "/rpc/list_employees": (b) => ok({ rows: (b as { p_status: string }).p_status === "active" ? [row({ setup_pending: true })] : [], total: 1, limit: 25, offset: 0, active_cap: 20, active_count: 2 }) });
+    const calls = mockFetch({
+      ...session("hr"),
+      "/rpc/list_employees": (b) => {
+        const { p_status } = b as { p_status: string };
+        const rows = p_status === "active" ? [row({ setup_pending: true })]
+          : p_status === "setup_pending" ? [row({ id: "e3", name: "New hire", status: "pending", setup_pending: true })] : [];
+        return ok({ rows, total: rows.length, limit: 25, offset: 0, active_cap: 20, active_count: 2 });
+      },
+    });
     wrap(<EmployeesList />);
-    expect(await screen.findByRole("link", { name: /Ravi K/ })).toHaveAttribute("href", "/employees/e2");
-    expect(screen.getByText("Setup pending")).toBeInTheDocument();
+    const employee = await screen.findByRole("link", { name: /Ravi K/ });
+    expect(employee).toHaveAttribute("href", "/employees/e2");
+    expect(within(employee).getByText("Setup pending")).toBeInTheDocument();
     expect(screen.getByText("2 of 20 active accounts used.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Add" })).toHaveAttribute("href", "/employees/new");
+    await user.click(screen.getByRole("tab", { name: "Setup pending" }));
+    expect(await screen.findByRole("link", { name: /New hire/ })).toHaveAttribute("href", "/employees/e3");
     await user.click(screen.getByRole("tab", { name: "Inactive" }));
     expect(await screen.findByText("No inactive employees")).toBeInTheDocument();
     expect(calls.some((c) => c.path === "/rpc/list_employees" && (c.body as { p_status: string }).p_status === "inactive")).toBe(true);
@@ -215,6 +226,51 @@ describe("Employee detail", () => {
     await user.type(within(dialog).getByLabelText("Designation"), "Senior clerk");
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
     expect(await within(dialog).findByText(/changed since you opened it/)).toBeInTheDocument();
+  });
+
+  it("lets HR generate and share a fresh credential for an employee still setting up", async () => {
+    const user = userEvent.setup();
+    const copy = vi.spyOn(navigator.clipboard, "writeText");
+    const calls = mockFetch(routes({
+      "/rpc/get_employee": () => ok(detail({ must_change_password: true })),
+      "/admin/users/e2/reset-password": () => ok({ employee_id: "e2", employee_code: "EMP002", temporary_password: "Setup-Temp-77" }),
+    }));
+    wrap(<EmployeeDetail id="e2" now={NOW} />);
+    await user.click(await screen.findByRole("button", { name: "Share setup details" }));
+    expect(calls.some((call) => call.path.endsWith("/reset-password"))).toBe(false);
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create temporary password" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "Share setup details" }));
+    expect(dialog.getByLabelText("Temporary password")).toHaveTextContent("Setup-Temp-77");
+    await user.click(dialog.getByRole("button", { name: "Copy sign-in details" }));
+    expect(copy).toHaveBeenLastCalledWith(expect.stringContaining(
+      `Sign-in link: ${window.location.origin}/login?employee_id=EMP002\nUsername (Employee ID): EMP002\nTemporary password: Setup-Temp-77`,
+    ));
+  });
+
+  it("finishes interrupted account setup before showing a temporary password", async () => {
+    const user = userEvent.setup();
+    let active = false;
+    const calls = mockFetch(routes({
+      "/rpc/get_employee": () => ok(detail({ status: active ? "active" : "pending", provisioning_state: active ? "complete" : "pending", must_change_password: true })),
+      "/admin/users/e2/complete-setup": () => {
+        active = true;
+        return ok({ employee_id: "e2", employee_code: "EMP002", temporary_password: "Finished-Setup-77" });
+      },
+    }));
+    wrap(<EmployeeDetail id="e2" now={NOW} />);
+    await user.click(await screen.findByRole("button", { name: "Share setup details" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Finish account setup" }));
+    expect(await screen.findByLabelText("Temporary password")).toHaveTextContent("Finished-Setup-77");
+    expect(calls.some((call) => call.path.endsWith("/reset-password"))).toBe(false);
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    expect(await screen.findByText("Active", { exact: true })).toBeInTheDocument();
+  });
+
+  it.each(["hr", "admin"])("leaves setup credentials for a pending %s account to an Admin", async (role) => {
+    mockFetch(routes({ "/rpc/get_employee": () => ok(detail({ role, must_change_password: true })) }));
+    wrap(<EmployeeDetail id="e2" now={NOW} />);
+    expect(await screen.findByText("Ask an Admin to prepare sign-in details for this account.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Share setup details" })).not.toBeInTheDocument();
   });
 
   it("team change needs a different team; leave adjust converts days to half-day units", async () => {

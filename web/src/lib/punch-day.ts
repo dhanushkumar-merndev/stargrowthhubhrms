@@ -143,31 +143,6 @@ export function outdoorErrors(f: { reason: string; photo: File | null }): Partia
   return e;
 }
 
-/**
- * Phone photos are often over the 5 MB limit: re-encode as a JPEG of at most
- * `max` px on the long side. Falls back to the original when the browser
- * cannot (or when it is already small enough).
- */
-export async function shrinkPhoto(file: File, max = 1600): Promise<File> {
-  if (typeof createImageBitmap !== "function" || typeof document === "undefined") return file;
-  try {
-    const bmp = await createImageBitmap(file);
-    const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
-    if (scale === 1 && file.size <= 1_500_000 && /^image\/(jpeg|png)$/.test(file.type)) return file;
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(bmp.width * scale);
-    canvas.height = Math.round(bmp.height * scale);
-    const g = canvas.getContext("2d");
-    if (!g) return file;
-    g.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.82));
-    if (!blob) return file;
-    return new File([blob], file.name.replace(/\.[^.]*$/, "") + ".jpg", { type: "image/jpeg" });
-  } catch {
-    return file;
-  }
-}
-
 /** Best-effort location (null when refused, unavailable or slow). */
 export function roughLocation(timeoutMs = 8000): Promise<{ latitude: number; longitude: number } | null> {
   return new Promise((resolve) => {

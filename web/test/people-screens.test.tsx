@@ -102,6 +102,42 @@ describe("My profile", () => {
     expect(up.query.get("owner_employee_id")).toBe("e1");
     expect(calls.find((c) => c.path === "/rpc/publish_document")!.body).toEqual({ p_file_version_id: "av1" });
   });
+
+  it("photo: previews front-camera captures and saves the retake only after confirmation", async () => {
+    const user = userEvent.setup();
+    let avatarId: string | null = null;
+    const calls = mockFetch({
+      ...session(),
+      "/rpc/get_my_profile": () => ok(profile({ avatar_file_version_id: avatarId })),
+      "/files": () => ok({ file_version_id: "av1" }),
+      "/rpc/publish_document": () => {
+        avatarId = "av1";
+        return ok({});
+      },
+      "/files/av1": () => [200, "photo"],
+    });
+    wrap(<ProfileScreen now={NOW} />);
+    await user.click(await screen.findByRole("button", { name: "Add photo" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Profile photo" }));
+    const camera = dialog.getByLabelText("Camera photo");
+    expect(camera).toHaveAttribute("capture", "user");
+    const openCamera = vi.spyOn(camera, "click");
+    await user.click(dialog.getByRole("button", { name: "Take photo" }));
+    expect(openCamera).toHaveBeenCalledOnce();
+
+    await user.upload(camera, new File(["first"], "capture.jpg", { type: "image/jpeg" }));
+    const firstPreview = (await dialog.findByAltText("New photo preview")).getAttribute("src");
+    const retake = new File(["retake"], "capture.jpg", { type: "image/jpeg" });
+    await user.upload(camera, retake);
+    await waitFor(() => expect(dialog.getByAltText("New photo preview")).not.toHaveAttribute("src", firstPreview));
+    expect(calls.some((call) => call.path === "/files")).toBe(false);
+
+    await user.click(dialog.getByRole("button", { name: "Save photo" }));
+    await screen.findByRole("button", { name: "Change photo" });
+    expect(calls.filter((call) => call.path === "/files").map((call) => call.body)).toEqual([retake]);
+    expect(calls.find((call) => call.path === "/rpc/publish_document")?.body).toEqual({ p_file_version_id: "av1" });
+    expect(await screen.findByRole("img", { name: "Asha Rao's photo" })).toBeInTheDocument();
+  });
 });
 
 describe("Directory", () => {

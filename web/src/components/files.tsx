@@ -4,7 +4,7 @@
 // audited API into memory and shown from an object URL that is revoked when
 // the viewer closes. Nothing is written to the browser cache.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { type FileClass, type OpenedFile, acceptAttr, fetchFile, fileError, saveBlob, sizeLabel } from "@/lib/files";
 import { initials } from "@/lib/people";
 import { Banner, Button, Sheet, Spinner, cx } from "./ui";
@@ -28,7 +28,6 @@ export function FilePicker({
   hint?: string;
 }) {
   const id = useId();
-  const ref = useRef<HTMLInputElement>(null);
   return (
     <div>
       <span className="mb-1.5 block text-body-md font-medium text-text-secondary">{label}</span>
@@ -41,23 +40,20 @@ export function FilePicker({
           <Button
             variant="text"
             type="button"
-            onClick={() => {
-              if (ref.current) ref.current.value = "";
-              onChange(null, null);
-            }}
+            onClick={() => onChange(null, null)}
           >
             Remove
           </Button>
         )}
         <input
-          ref={ref}
           id={id}
           type="file"
           aria-label={label}
           accept={acceptAttr(cls)}
           className="sr-only"
           onChange={(e) => {
-            const f = e.target.files?.[0] ?? null;
+            const f = e.currentTarget.files?.[0] ?? null;
+            if (f) e.currentTarget.value = "";
             onChange(f, f ? fileError(f, cls) : null);
           }}
         />

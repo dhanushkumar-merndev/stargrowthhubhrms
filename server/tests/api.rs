@@ -923,6 +923,80 @@ async fn provisioning_is_idempotent_per_operation() {
 }
 
 #[tokio::test]
+async fn interrupted_setup_can_issue_one_usable_temporary_password() {
+    let t = setup!();
+    let admin = t.admin().await;
+    let (org, team, shift, office) = t.org_ids().await;
+    let (auth_user_id, session_id, alias): (Uuid, Uuid, String) = sqlx::query_as(
+        "select e.auth_user_id, s.id, e.auth_alias from hrms.employees e
+         join iam.sessions s on s.user_id = e.auth_user_id
+         where e.org_id = $1 and e.employee_code = $2 order by s.created_at desc limit 1",
+    )
+    .bind(org)
+    .bind(&t.admin_code)
+    .fetch_one(&t.pool)
+    .await
+    .unwrap();
+    let operation_id = Uuid::new_v4();
+    let fields = json!({ "employee_code": "EMP201", "full_name": "Pending Setup", "join_date": "2026-01-05",
+                         "team_id": team, "office_id": office, "shift_id": shift });
+    let pending: Value =
+        sqlx::query_scalar("select public.internal_provision_begin($1,$2,$3,$4,$5,$6)")
+            .bind(auth_user_id)
+            .bind(session_id)
+            .bind(&alias)
+            .bind(operation_id)
+            .bind(&fields)
+            .bind("staff.hrms.invalid")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    let employee_id = pending["employee_id"].as_str().unwrap();
+    sqlx::query("select iam.create_user($1, $2)")
+        .bind(pending["auth_alias"].as_str().unwrap())
+        .bind("$argon2id$test-only")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+
+    let resume = format!("/v1/admin/users/{employee_id}/complete-setup");
+    let (original, resumed) = tokio::join!(
+        t.post(
+            "/v1/admin/users",
+            json!({ "operation_id": operation_id, "fields": fields }),
+            Some(&admin)
+        ),
+        t.post(&resume, json!({}), Some(&admin)),
+    );
+    assert_eq!(original.status, StatusCode::OK, "{}", original.body);
+    assert_eq!(resumed.status, StatusCode::OK, "{}", resumed.body);
+    let passwords: Vec<&str> = [&original, &resumed]
+        .into_iter()
+        .filter_map(|response| response.body["data"]["temporary_password"].as_str())
+        .collect();
+    assert_eq!(passwords.len(), 1);
+    let login = t.login("EMP201", passwords[0]).await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.body);
+    assert_eq!(login.body["data"]["must_change_password"], true);
+
+    let reset = format!("/v1/admin/users/{employee_id}/reset-password");
+    let body = json!({ "operation_id": Uuid::new_v4() });
+    let (first, second) = tokio::join!(
+        t.post(&reset, body.clone(), Some(&admin)),
+        t.post(&reset, body, Some(&admin)),
+    );
+    let (success, retry) = if first.status == StatusCode::OK {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    assert_eq!(success.status, StatusCode::OK, "{}", success.body);
+    assert_eq!(retry.status, StatusCode::CONFLICT, "{}", retry.body);
+    let temporary = success.body["data"]["temporary_password"].as_str().unwrap();
+    assert_eq!(t.login("EMP201", temporary).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn provisioning_validation() {
     let t = setup!();
     let admin = t.admin().await;

@@ -11,7 +11,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { rpc } from "@/lib/api";
 import { todayIn } from "@/lib/attendance";
-import { fetchFile, uploadFile } from "@/lib/files";
+import { fetchFile, shrinkPhoto, uploadFile } from "@/lib/files";
 import {
   FIX_STATUS,
   OUT_SOURCE,
@@ -27,7 +27,6 @@ import {
   outdoorErrors,
   punchOutErrors,
   roughLocation,
-  shrinkPhoto,
 } from "@/lib/punch-day";
 import { useSession } from "@/lib/session";
 import { addDays, minutesLabel } from "@/lib/tasks";

@@ -111,6 +111,10 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/two-step/recovery", post(auth::two_step::recovery))
         .route("/admin/users", post(auth::routes::provision_user))
         .route(
+            "/admin/users/{employee_id}/complete-setup",
+            post(auth::routes::complete_account_setup),
+        )
+        .route(
             "/admin/users/{employee_id}/reset-password",
             post(auth::routes::reset_password),
         )

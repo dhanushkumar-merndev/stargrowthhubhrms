@@ -55,7 +55,12 @@ const PAGE = 25;
 
 /* ───────────────────────── List ───────────────────────── */
 
-type StatusTab = "active" | "inactive";
+type StatusTab = "active" | "setup_pending" | "inactive";
+const EMPTY_EMPLOYEES: Record<StatusTab, string> = {
+  active: "No active employees",
+  setup_pending: "No accounts pending setup",
+  inactive: "No inactive employees",
+};
 
 export function EmployeesList() {
   const { context } = useSession();
@@ -92,6 +97,7 @@ export function EmployeesList() {
           label="Status"
           tabs={[
             { id: "active", label: "Active" },
+            { id: "setup_pending", label: "Setup pending" },
             { id: "inactive", label: "Inactive" },
           ]}
           value={status}
@@ -115,7 +121,7 @@ export function EmployeesList() {
         ) : !list.data ? (
           <LoadingState />
         ) : list.data.rows.length === 0 ? (
-          <EmptyState art="groups" title={q ? `Nobody matches “${q}”` : status === "active" ? "No active employees" : "No inactive employees"} />
+          <EmptyState art="groups" title={q ? `Nobody matches “${q}”` : EMPTY_EMPLOYEES[status]} />
         ) : (
           <>
             <ul className="flex flex-col gap-2">
@@ -131,7 +137,7 @@ export function EmployeesList() {
                       </div>
                       <div className="flex flex-col items-end gap-1">
                         {r.role !== "employee" && <StatusChip label={roleLabel(r.role)} tone="info" />}
-                        {r.setup_pending ? <StatusChip label="Setup pending" tone="warning" /> : r.status !== "active" && <StatusChip label={st.label} tone={st.tone} />}
+                        {r.setup_pending && r.status !== "inactive" ? <StatusChip label="Setup pending" tone="warning" /> : r.status !== "active" && <StatusChip label={st.label} tone={st.tone} />}
                       </div>
                     </Link>
                   </li>
@@ -347,7 +353,7 @@ interface EmployeeFiles {
 }
 
 type Tab = "details" | "attendance" | "pay" | "files" | "more";
-type SheetKind = "work" | "private" | "status" | "access" | "reset" | "team" | "office" | "shift" | "salary" | "leave" | "exception" | "doc" | null;
+type SheetKind = "work" | "private" | "status" | "access" | "reset" | "setup" | "team" | "office" | "shift" | "salary" | "leave" | "exception" | "doc" | null;
 
 const current = <T extends History>(rows: T[]) => rows.find((r) => r.to == null) ?? rows[0];
 
@@ -371,6 +377,10 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
   const e = q.data;
   const st = employeeStatus(e.status);
   const self = e.id === context?.employee.id;
+  const signInAvailable = e.status === "active" && e.provisioning_state === "complete";
+  const unfinishedProvisioning = e.status === "pending" && e.provisioning_state !== "complete";
+  const setupPending = unfinishedProvisioning || (signInAvailable && e.must_change_password);
+  const canIssuePassword = e.can_edit && c.canProvision && !self && (c.isAdmin || e.role === "employee");
   const done = (text: string) => async () => {
     setSheet(null);
     setRevoking(null);
@@ -460,7 +470,15 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
               </div>
               <KeyValue k="Role" v={roleLabel(e.role)} />
               <KeyValue k="Label" v={e.position_label === "manager" ? "Manager" : "Member"} />
-              {c.canViewEmployees && e.status === "active" && e.provisioning_state === "complete" && (
+              {setupPending && canIssuePassword && (
+                <Button variant="outlined" className="mt-2" onClick={() => setSheet("setup")}>
+                  Share setup details
+                </Button>
+              )}
+              {setupPending && c.isHr && (e.role === "hr" || e.role === "admin") && (
+                <p className="mt-2 text-body-sm text-text-secondary">Ask an Admin to prepare sign-in details for this account.</p>
+              )}
+              {c.canViewEmployees && signInAvailable && !setupPending && (
                 <div className="mt-2">
                   <SignInShare key={e.code} code={e.code} name={e.name} />
                 </div>
@@ -476,12 +494,14 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
                 return <KeyValue key={f.key} k={f.label} v={v ? (f.key === "date_of_birth" ? dayLabel(String(v)) : String(v)) : "—"} />;
               })}
             </SectionCard>
-            {e.can_edit && !self && (
+            {e.can_edit && !self && e.status !== "pending" && (
               <div className="flex flex-col gap-2">
                 <TwoStepAdmin id={e.id} />
-                <Button variant="outlined" onClick={() => setSheet("reset")} disabled={e.status !== "active"}>
-                  Reset password
-                </Button>
+                {canIssuePassword && !setupPending && (
+                  <Button variant="outlined" onClick={() => setSheet("reset")} disabled={!signInAvailable}>
+                    Reset password
+                  </Button>
+                )}
                 <Button variant={e.status === "active" ? "danger" : "outlined"} onClick={() => setSheet("status")}>
                   {e.status === "active" ? "Deactivate" : "Reactivate"}
                 </Button>
@@ -606,7 +626,12 @@ export function EmployeeDetail({ id, now = new Date() }: { id: string; now?: Dat
       {sheet === "private" && <PrivateSheet e={e} today={today} onClose={() => setSheet(null)} onSaved={done("Personal details saved.")} />}
       {sheet === "status" && <StatusSheet e={e} today={today} onClose={() => setSheet(null)} onSaved={done(e.status === "active" ? "Deactivated." : "Reactivated.")} />}
       {sheet === "access" && <AccessSheet e={e} isAdmin={c.isAdmin} onClose={() => setSheet(null)} onSaved={done("Access changed.")} />}
-      {sheet === "reset" && <ResetSheet e={e} onClose={() => setSheet(null)} />}
+      {(sheet === "reset" || sheet === "setup") && (
+        <CredentialShareSheet e={e} setup={sheet === "setup"} onClose={() => {
+          setSheet(null);
+          void q.mutate().catch(() => undefined);
+        }} />
+      )}
       {(sheet === "team" || sheet === "office" || sheet === "shift") && <AssignSheet kind={sheet} e={e} today={today} onClose={() => setSheet(null)} onSaved={done("Change saved.")} />}
       {sheet === "salary" && salary.data && <SalarySheet employeeId={e.id} s={salary.data} today={today} onClose={() => setSheet(null)} onSaved={done("Salary saved.")} />}
       {sheet === "leave" && <LeaveAdjustSheet employeeId={e.id} year={Number(today.slice(0, 4))} onClose={() => setSheet(null)} onSaved={done("Leave balance adjusted.")} />}
@@ -773,32 +798,51 @@ export function TwoStepAdmin({ id }: { id: string }) {
   );
 }
 
-function ResetSheet({ e, onClose }: { e: EmployeeDetailData; onClose: () => void }) {
+function CredentialShareSheet({ e, setup, onClose }: { e: EmployeeDetailData; setup: boolean; onClose: () => void }) {
   const a = useAction();
-  const [pw, setPw] = useState<string | null>(null);
-  const op = useRef(newOperationId());
-  if (pw)
+  const [result, setResult] = useState<ProvisionResult["data"] | null>(null);
+  const op = useRef<string | null>(null);
+  if (result) {
     return (
-      <Sheet title="Password reset" onClose={onClose}>
-        <TempPassword code={e.code} name={e.name} password={pw} />
+      <Sheet title={setup ? "Share setup details" : "Password reset"} onClose={onClose}>
+        {result.temporary_password ? (
+          <TempPassword code={result.employee_code ?? e.code} name={e.name} password={result.temporary_password} />
+        ) : (
+          <Banner tone="info">Account setup has finished. Close this dialog and reopen the account’s sign-in details to issue a fresh temporary password.</Banner>
+        )}
       </Sheet>
     );
+  }
+  const finish = setup && e.provisioning_state !== "complete";
   return (
     <SheetForm
-      title={`Reset ${e.name}'s password?`}
-      submit="Reset password"
+      title={setup ? `Prepare sign-in details for ${e.name}?` : `Reset ${e.name}'s password?`}
+      submit={finish ? "Finish account setup" : setup ? "Create temporary password" : "Reset password"}
       busy={a.busy}
       error={a.error}
       onClose={onClose}
       onSubmit={() =>
         a.run(async () => {
-          const r = await withReauth("credentials.reset_admin", e.id, () => post<ProvisionResult>(`/admin/users/${e.id}/reset-password`, { operation_id: op.current }));
-          if (!r.data.temporary_password) throw new Error("No password was returned. Try again.");
-          setPw(r.data.temporary_password);
-        }, "Could not reset the password.")
+          try {
+            const { data } = await withReauth("credentials.reset_admin", e.id, () => {
+              if (finish) return post<ProvisionResult>(`/admin/users/${e.id}/complete-setup`);
+              op.current ??= newOperationId();
+              return post<ProvisionResult>(`/admin/users/${e.id}/reset-password`, { operation_id: op.current });
+            });
+            if (!data.temporary_password && !data.already) throw new Error("No temporary password was returned. Try again.");
+            setResult(data);
+          } catch (error) {
+            if (error instanceof ApiError && error.code === "CONFLICT") op.current = null;
+            throw error;
+          }
+        }, setup ? "Could not prepare sign-in details." : "Could not reset the password.")
       }
     >
-      <p className="text-body-md">They are signed out everywhere and must set a new password with the temporary one.</p>
+      <p className="text-body-md">
+        {finish
+          ? "Their account will be activated with its assigned role and a temporary password."
+          : "This replaces their password and signs them out everywhere. They’ll choose a new password at sign-in."}
+      </p>
     </SheetForm>
   );
 }

@@ -350,6 +350,22 @@ async fn apply_password(
     actor: Uuid,
 ) -> ApiResult<()> {
     let mut tx = service(pool, rid).await?;
+    // Finalization locks the operation. A retry must leave the hash installed
+    // by the first successful request in place.
+    let finalized: Value = sqlx::query_scalar(
+        "select public.internal_credential_finalize(p_operation_id => $1, p_actor_employee_id => $2)",
+    )
+    .bind(operation_id)
+    .bind(actor)
+    .fetch_one(&mut *tx)
+    .await?;
+    if finalized["already"] == json!(true) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "CONFLICT",
+            "This password change already finished.",
+        ));
+    }
     let found: bool = sqlx::query_scalar("select iam.set_password($1, $2)")
         .bind(user_id)
         .bind(phc)
@@ -359,13 +375,6 @@ async fn apply_password(
         tracing::error!(%user_id, "credential target has no login row");
         return Err(ApiError::internal());
     }
-    sqlx::query(
-        "select public.internal_credential_finalize(p_operation_id => $1, p_actor_employee_id => $2)",
-    )
-    .bind(operation_id)
-    .bind(actor)
-    .execute(&mut *tx)
-    .await?;
     sqlx::query("select iam.delete_user_sessions($1, null)")
         .bind(user_id)
         .execute(&mut *tx)
@@ -586,22 +595,16 @@ pub async fn provision_user(
     tx.commit().await?;
     let employee_id = begin["employee_id"]
         .as_str()
-        .and_then(|s| Uuid::parse_str(s).ok());
-    let alias = begin["auth_alias"].as_str().unwrap_or_default().to_owned();
-    let (Some(employee_id), false) = (employee_id, alias.is_empty()) else {
-        return Err(tag(ApiError::internal()));
-    };
-    if begin["provisioning_state"] == json!("complete") {
-        return Ok(ok(
-            json!({ "employee_id": employee_id, "already": true, "temporary_password": null }),
-            rid,
-        )
-        .into_response());
-    }
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| tag(ApiError::internal()))?;
+    let already_provisioned = begin["provisioning_state"] == json!("complete");
 
     // Optional machine PIN, claimed as the HR/Admin user (their permissions).
     let mut device = Value::Null;
-    if let Some(pin) = body.device_pin.filter(|p| !p.trim().is_empty()) {
+    if let Some(pin) = body
+        .device_pin
+        .filter(|p| !already_provisioned && !p.trim().is_empty())
+    {
         let mut tx = db::begin_as(&db.pool, Caller::User(c), rid).await?;
         device = sqlx::query_scalar(
             "select public.claim_device_pin_for_hire(p_employee_id => $1, p_serial => $2, p_pin => $3)",
@@ -616,11 +619,61 @@ pub async fn provision_user(
         device = device.get("data").cloned().unwrap_or(device);
     }
 
+    finish_account_setup(&db.pool, &session, employee_id, Some(operation_id), device).await
+}
+
+pub async fn complete_account_setup(
+    State(state): State<AppState>,
+    session: Session,
+    Path(employee_id): Path<String>,
+) -> ApiResult<Response> {
+    let employee_id = Uuid::parse_str(&employee_id)
+        .map_err(|_| ApiError::not_found().with_request_id(Some(session.request_id.to_string())))?;
+    finish_account_setup(&state.db()?.pool, &session, employee_id, None, Value::Null).await
+}
+
+async fn finish_account_setup(
+    pool: &PgPool,
+    session: &Session,
+    employee_id: Uuid,
+    operation_id: Option<Uuid>,
+    device: Value,
+) -> ApiResult<Response> {
+    let rid = session.request_id;
+    let tag = |e: ApiError| e.with_request_id(Some(rid.to_string()));
+    let c = &session.claims;
+    let mut tx = service(pool, rid).await?;
+    let pending: Value = sqlx::query_scalar(
+        "select public.internal_lock_account_provisioning(p_auth_user_id => $1, p_session_id => $2, p_email => $3,
+                  p_employee_id => $4, p_operation_id => $5)",
+    )
+    .bind(c.sub)
+    .bind(c.session_id)
+    .bind(&c.email)
+    .bind(employee_id)
+    .bind(operation_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| tag(e.into()))?;
+    if pending["already"] == json!(true) {
+        tx.commit().await?;
+        return Ok(ok(
+            json!({ "employee_id": employee_id, "employee_code": pending["employee_code"], "already": true, "temporary_password": null }),
+            rid,
+        )
+        .into_response());
+    }
+    let operation_id = pending["operation_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .ok_or_else(|| tag(ApiError::internal()))?;
+    let alias = pending["auth_alias"]
+        .as_str()
+        .ok_or_else(|| tag(ApiError::internal()))?;
     let temp = password::temporary();
-    let phc = password::hash_async(temp.clone()).await?;
-    let mut tx = service(&db.pool, rid).await?;
+    let phc = password::hash_async(temp.clone()).await.map_err(tag)?;
     // A retry after a crash finds the login row from the first attempt.
-    let user_id = match stored_password(&mut tx, &alias).await? {
+    let user_id = match stored_password(&mut tx, alias).await? {
         Some((id, _)) => {
             sqlx::query("select iam.set_password($1, $2)")
                 .bind(id)
@@ -631,7 +684,7 @@ pub async fn provision_user(
         }
         None => {
             sqlx::query_scalar("select iam.create_user($1, $2)")
-                .bind(&alias)
+                .bind(alias)
                 .bind(&phc)
                 .fetch_one(&mut *tx)
                 .await?

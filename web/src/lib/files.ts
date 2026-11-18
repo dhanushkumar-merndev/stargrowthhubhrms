@@ -46,6 +46,29 @@ export function fileError(file: { name: string; type?: string; size: number }, c
   return null;
 }
 
+/** Downsize camera photos as JPEGs before upload. Keep the original if decoding is unavailable. */
+export async function shrinkPhoto(file: File, max = 1600): Promise<File> {
+  if (typeof createImageBitmap !== "function" || typeof document === "undefined") return file;
+  let bitmap: ImageBitmap | undefined;
+  try {
+    bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+    if (scale === 1 && file.size <= 1_500_000 && /^image\/(jpeg|png)$/.test(file.type)) return file;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return file;
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+    return blob ? new File([blob], file.name.replace(/\.[^.]*$/, "") + ".jpg", { type: "image/jpeg" }) : file;
+  } catch {
+    return file;
+  } finally {
+    bitmap?.close();
+  }
+}
+
 export function sizeLabel(bytes: number | null | undefined): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return "—";
   if (bytes < 1000) return `${bytes} B`;

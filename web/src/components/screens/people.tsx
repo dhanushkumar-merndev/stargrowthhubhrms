@@ -7,7 +7,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, newOperationId, rpc } from "@/lib/api";
 import { dayLabel, todayIn } from "@/lib/attendance";
-import { uploadFile } from "@/lib/files";
+import { fileError, shrinkPhoto, uploadFile } from "@/lib/files";
 import { type DirectoryRow, type Paged, type PrivateKey, type Profile, type OrgStructure, PRIVATE_FIELDS, privateErrors, privatePatch } from "@/lib/people";
 import { caps, roleLabel } from "@/lib/roles";
 import { stateOf } from "@/lib/requests";
@@ -237,14 +237,40 @@ function PhotoSheet({ employeeId, onClose, onSaved }: { employeeId: string; onCl
   const [problem, setProblem] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  const camera = useRef<HTMLInputElement>(null);
+  const active = useRef(false);
   const last = useRef<string | null>(null);
-  useEffect(() => () => {
-    if (last.current) URL.revokeObjectURL(last.current);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+      if (last.current) URL.revokeObjectURL(last.current);
+    };
   }, []);
+
+  function choosePhoto(next: File | null, validation: string | null) {
+    setFile(next);
+    setProblem(validation);
+    setError(null);
+    if (last.current) URL.revokeObjectURL(last.current);
+    last.current = next && !validation ? URL.createObjectURL(next) : null;
+    setPreview(last.current);
+  }
+
+  async function prepareCapture(shot: File) {
+    setPreparing(true);
+    setError(null);
+    const next = await shrinkPhoto(shot);
+    if (!active.current) return;
+    choosePhoto(next, fileError(next, "avatar"));
+    setPreparing(false);
+  }
+
   const save = async () => {
+    if (busy || preparing || problem) return;
     if (!file) return setProblem("Choose a photo.");
-    if (problem) return;
     setBusy(true);
     setError(null);
     try {
@@ -264,21 +290,37 @@ function PhotoSheet({ employeeId, onClose, onSaved }: { employeeId: string; onCl
           // eslint-disable-next-line @next/next/no-img-element -- local preview
           <img src={preview} alt="New photo preview" className="mx-auto size-40 rounded-full object-cover" />
         )}
-        <FilePicker
-          label="Photo"
-          cls="avatar"
-          file={file}
-          error={problem}
-          hint="JPG, PNG or WebP, up to 5 MB. A square photo looks best."
-          onChange={(f, p) => {
-            setFile(f);
-            setProblem(p);
-            if (last.current) URL.revokeObjectURL(last.current);
-            last.current = f && !p ? URL.createObjectURL(f) : null;
-            setPreview(last.current);
-          }}
-        />
-        <Button busy={busy} disabled={!file || !!problem} onClick={save}>
+        <fieldset disabled={busy || preparing} className="flex min-w-0 flex-col gap-3">
+          <div className="hidden [@media(any-pointer:coarse)]:block">
+            <Button type="button" variant="outlined" className="w-full" onClick={() => camera.current?.click()}>
+              <Art name="photo_camera" size={20} />
+              Take photo
+            </Button>
+          </div>
+          <input
+            ref={camera}
+            type="file"
+            accept="image/*"
+            capture="user"
+            aria-label="Camera photo"
+            hidden
+            onChange={(e) => {
+              const shot = e.currentTarget.files?.[0];
+              e.currentTarget.value = "";
+              if (shot) void prepareCapture(shot);
+            }}
+          />
+          <FilePicker
+            label="Photo"
+            cls="avatar"
+            file={file}
+            error={problem}
+            hint="JPG, PNG or WebP, up to 5 MB. A square photo looks best."
+            onChange={choosePhoto}
+          />
+        </fieldset>
+        {preparing && <p role="status" className="text-body-sm text-text-secondary">Preparing photo…</p>}
+        <Button busy={busy} disabled={preparing || !file || !!problem} onClick={save}>
           Save photo
         </Button>
       </div>
