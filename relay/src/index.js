@@ -10,6 +10,11 @@
 // * The response is sent with a Content-Length (no chunking): some firmware
 //   cannot read chunked replies.
 //
+// * Keep-awake: Render's free plan stops the API after 15 minutes without a
+//   request, and the next visitor (or the machine) then waits for it to start
+//   again; on 2026-11-18 it stayed down from 20:04 to 14:25 IST. A cron
+//   trigger (wrangler.toml) calls /healthz every 5 minutes so it never sleeps.
+//
 // Config: API_ORIGIN (wrangler.toml [vars]) and the DEVICE_RELAY_SECRET secret
 // (`npx wrangler secret put DEVICE_RELAY_SECRET`, same value as on Render).
 
@@ -67,6 +72,16 @@ const relay = {
         ...(upstream.headers.get("date") ? { date: upstream.headers.get("date") } : {}),
       },
     });
+  },
+
+  // Cron trigger: keep the API awake (see the header).
+  async scheduled(_event, env, ctx) {
+    if (!env.API_ORIGIN) return;
+    ctx.waitUntil(
+      fetch(new URL("/healthz", env.API_ORIGIN), { headers: { "user-agent": "hrms-relay-keepalive" } })
+        .then((r) => r.arrayBuffer())
+        .catch(() => undefined),
+    );
   },
 };
 

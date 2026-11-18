@@ -12,3 +12,7 @@ preview_urls = false
 API_ORIGIN = "https://stargrowthhubhrms-api.onrender.com"
 
 # Secret (not here): npx wrangler secret put DEVICE_RELAY_SECRET   (same value as on Render)
+
+# Keep the Render API awake: its free plan sleeps after 15 idle minutes.
+[triggers]
+crons = ["*/5 * * * *"]
