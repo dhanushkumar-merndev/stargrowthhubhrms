@@ -78,8 +78,23 @@ async fn main() {
             "web push is off (set VAPID_PRIVATE_KEY and VAPID_SUBJECT); the inbox still works"
         );
     }
+    // Native-app push is optional: a bad key turns FCM off instead of
+    // stopping the API (browsers and the PWA use Web Push above).
+    let fcm = match hrms_server::fcm::Fcm::from_lookup(|k| std::env::var(k).ok()) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!("FCM misconfigured, mobile-app push is off: {e}");
+            None
+        }
+    };
+    match &fcm {
+        Some(f) => tracing::info!(project = %f.project_id, "FCM push for the mobile apps is on"),
+        None => tracing::info!(
+            "FCM is off (set FCM_SERVICE_ACCOUNT_JSON); the mobile apps get no push, browsers are unaffected"
+        ),
+    }
     let vapid_public_key = vapid.as_ref().map(|v| v.public_key.clone());
-    hrms_server::push::spawn(pool.clone(), vapid);
+    hrms_server::push::spawn(pool.clone(), vapid, fcm);
     let store = match hrms_server::storage::Store::from_lookup(|k| std::env::var(k).ok()) {
         Ok(s) => s,
         Err(e) => {

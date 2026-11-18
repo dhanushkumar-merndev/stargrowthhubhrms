@@ -30,6 +30,7 @@ openssl rand -base64 48 | tr -d '\n=+/' ; echo     # run once per secret
 | `DEVICE_INGEST_SECRET` | Render | ≥ 32 chars. Stored hashed in the DB. |
 | `DEVICE_RELAY_SECRET` | Render **and** Worker | Same value on both. |
 | `VAPID_PRIVATE_KEY` | Render | See §0.1. |
+| `FCM_SERVICE_ACCOUNT_JSON`, `FCM_PROJECT_ID` | Render | Optional, only for the native mobile apps. See §0.2. |
 
 ### 0.1 Web Push (VAPID) key
 
@@ -43,6 +44,24 @@ The printed 43-character value is `VAPID_PRIVATE_KEY`. Set `VAPID_SUBJECT` to
 personal one). The browser reads the public key from `GET /v1/push/config`, so
 nothing push-related is set on Vercel. Store `vapid.pem` in a password manager,
 then delete the file. Rotating the key makes every browser re-subscribe.
+
+### 0.2 Firebase Cloud Messaging (native mobile apps only)
+
+Browsers and the installed PWA use Web Push (§0.1). FCM is only for the
+Android/iOS apps, which register their FCM token with
+`register_push_token(.., 'android' | 'ios')`.
+
+1. Firebase console → Project settings → **Cloud Messaging**: "Firebase Cloud
+   Messaging API (V1)" must say *Enabled*.
+2. Project settings → **Service accounts** → *Generate new private key*.
+3. On Render set `FCM_SERVICE_ACCOUNT_JSON` to the file as base64 and
+   `FCM_PROJECT_ID` to the project ID (e.g. `hrms-26469`). PowerShell:
+   `[Convert]::ToBase64String([IO.File]::ReadAllBytes("firebase-key.json")) | Set-Clipboard`
+4. Store the file in a password manager, then delete it. The start-up log says
+   `FCM push for the mobile apps is on`; a wrong key logs
+   `FCM misconfigured, mobile-app push is off: …` and the API keeps running.
+5. iOS also needs an APNs auth key (`.p8`) uploaded under Cloud Messaging →
+   Apple app configuration.
 
 ---
 
@@ -217,5 +236,6 @@ Tick each on a phone (Android Chrome) **and** a desktop browser.
 | `DEVICE_RELAY_SECRET` | Render + `wrangler secret put`, then redeploy both. |
 | `DEVICE_INGEST_SECRET` | Render only; the server re-hashes it on start. |
 | `VAPID_PRIVATE_KEY` | Render; browsers re-subscribe the next time people open Notification settings. |
+| `FCM_SERVICE_ACCOUNT_JSON` | Generate a new key (Firebase → Service accounts), set it on Render, redeploy, then delete the old key in Google Cloud → IAM → Service accounts → Keys. Device tokens stay valid. |
 | `APP_SECRET` | Avoid. It also seals two-step secrets, so everyone with two-step on must be reset by an Admin. Rate-limit windows also reset. |
 | Database password | Supabase → reset password → update `DATABASE_URL` on Render. |

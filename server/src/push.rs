@@ -29,7 +29,7 @@ use sha2::Sha256;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{db, error::ApiResult};
+use crate::{db, error::ApiResult, fcm::Fcm};
 
 /// Hosts of the browser push services we deliver to (suffix match).
 pub const PUSH_HOSTS: &[&str] = &[
@@ -311,7 +311,9 @@ pub fn safe_path(link: Option<&str>) -> String {
     }
 }
 
-pub fn payload(job: &Value) -> Vec<u8> {
+/// The fields every push carries (Web Push and FCM alike), clipped and with
+/// the deep link reduced to a safe in-app path.
+pub fn payload_value(job: &Value) -> Value {
     let s = |k: &str| job.get(k).and_then(Value::as_str);
     let clip =
         |v: Option<&str>, n: usize| v.unwrap_or_default().chars().take(n).collect::<String>();
@@ -322,8 +324,10 @@ pub fn payload(job: &Value) -> Vec<u8> {
         "tag": s("event_id").unwrap_or_default(),
         "kind": clip(s("kind"), 60),
     })
-    .to_string()
-    .into_bytes()
+}
+
+pub fn payload(job: &Value) -> Vec<u8> {
+    payload_value(job).to_string().into_bytes()
 }
 
 /// Combines per-subscription results into one outbox outcome.
@@ -367,10 +371,29 @@ async fn service(pool: &PgPool, sql: &str, arg: Value) -> ApiResult<Value> {
     Ok(v.unwrap_or(Value::Null))
 }
 
+/// `(platform, token)` for every registered device of an outbox job.
+pub fn job_devices(job: &Value) -> Vec<(String, String)> {
+    let Some(tokens) = job.get("tokens").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(tokens.len());
+    for x in tokens {
+        if let (Some(p), Some(t)) = (x["platform"].as_str(), x["token"].as_str()) {
+            out.push((p.to_owned(), t.to_owned()));
+        }
+    }
+    out
+}
+
 /// One outbox pass. Returns how many jobs were completed.
+///
+/// Browser subscriptions (`web`) go out as Web Push with VAPID; native app
+/// tokens (`android`, `ios`) go through FCM. A device whose channel is not
+/// configured on this server is left alone (not revoked).
 pub async fn run_outbox(
     pool: &PgPool,
     vapid: Option<&Vapid>,
+    fcm: Option<&Fcm>,
     http: &reqwest::Client,
 ) -> ApiResult<usize> {
     let jobs = service(
@@ -386,28 +409,23 @@ pub async fn run_outbox(
     let mut results = Vec::with_capacity(jobs.len());
     for job in &jobs {
         let id = job.get("outbox_id").cloned().unwrap_or(Value::Null);
-        let web: Vec<String> = job
-            .get("tokens")
-            .and_then(Value::as_array)
-            .map(|t| {
-                t.iter()
-                    .filter(|x| x.get("platform").and_then(Value::as_str) == Some("web"))
-                    .filter_map(|x| x.get("token").and_then(Value::as_str).map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let devices = job_devices(job);
         let mut r = if job.get("suppressed").and_then(Value::as_bool) == Some(true) {
             json!({ "outcome": "skipped", "error": "muted or quiet hours" })
-        } else if let Some(v) = vapid {
+        } else if vapid.is_none() && fcm.is_none() {
+            json!({ "outcome": "skipped", "error": "push not configured" })
+        } else {
             let body = payload(job);
-            let mut per = Vec::with_capacity(web.len());
-            for t in web {
-                let d = send(http, v, &t, &body).await;
+            let mut per = Vec::with_capacity(devices.len());
+            for (platform, t) in devices {
+                let d = match (platform.as_str(), vapid, fcm) {
+                    ("web", Some(v), _) => send(http, v, &t, &body).await,
+                    ("android" | "ios", _, Some(f)) => f.send(http, &t, job).await,
+                    _ => continue,
+                };
                 per.push((t, d));
             }
             outcome(&per)
-        } else {
-            json!({ "outcome": "skipped", "error": "push not configured" })
         };
         r["outbox_id"] = id;
         results.push(r);
@@ -423,7 +441,7 @@ pub async fn run_outbox(
 }
 
 /// Polls for due pushes every 10 s (cheap `internal_outbox_has_due` first).
-pub fn spawn(pool: PgPool, vapid: Option<Vapid>) {
+pub fn spawn(pool: PgPool, vapid: Option<Vapid>, fcm: Option<Fcm>) {
     tokio::spawn(async move {
         let http = client();
         let mut every = tokio::time::interval(Duration::from_secs(10));
@@ -441,7 +459,7 @@ pub fn spawn(pool: PgPool, vapid: Option<Vapid>) {
             .await;
             match due {
                 Ok(true) => {
-                    if let Err(e) = run_outbox(&pool, vapid.as_ref(), &http).await {
+                    if let Err(e) = run_outbox(&pool, vapid.as_ref(), fcm.as_ref(), &http).await {
                         tracing::warn!(code = %e.code, "push outbox pass failed");
                     }
                 }
@@ -705,5 +723,20 @@ mod tests {
         assert_eq!(safe_path(Some("https://x")), "/notifications");
         assert_eq!(safe_path(Some("/\\evil")), "/notifications");
         assert_eq!(safe_path(None), "/notifications");
+    }
+
+    #[test]
+    fn devices_of_a_job() {
+        let job = json!({ "tokens": [
+            { "platform": "web", "token": "{}" },
+            { "platform": "android", "token": "fcm-token" },
+            { "platform": "ios" },
+        ] });
+        let want: Vec<(String, String)> = vec![
+            ("web".into(), "{}".into()),
+            ("android".into(), "fcm-token".into()),
+        ];
+        assert_eq!(job_devices(&job), want);
+        assert!(job_devices(&json!({})).is_empty());
     }
 }

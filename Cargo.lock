@@ -792,6 +792,7 @@ dependencies = [
  "p256",
  "qrcode",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha1",

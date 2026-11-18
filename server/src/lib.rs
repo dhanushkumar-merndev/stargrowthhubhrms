@@ -6,6 +6,7 @@ pub mod calendar;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod fcm;
 pub mod files;
 pub mod iclock;
 pub mod jobs;

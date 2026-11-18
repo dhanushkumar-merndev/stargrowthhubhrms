@@ -2835,7 +2835,7 @@ async fn notification_prefs_quiet_hours_and_push_outbox() {
     let r = t.rpc("send_test_notification", json!({}), &emp).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let http = hrms_server::push::client();
-    let n = hrms_server::push::run_outbox(&t.pool, None, &http)
+    let n = hrms_server::push::run_outbox(&t.pool, None, None, &http)
         .await
         .unwrap();
     assert!(n >= 1);
@@ -2870,7 +2870,7 @@ async fn notification_prefs_quiet_hours_and_push_outbox() {
         p256::SecretKey::from_slice(&[9u8; 32]).unwrap(),
         "mailto:ops@example.com".into(),
     );
-    hrms_server::push::run_outbox(&t.pool, Some(&vapid), &http)
+    hrms_server::push::run_outbox(&t.pool, Some(&vapid), None, &http)
         .await
         .unwrap();
     let live: i64 = sqlx::query_scalar(
