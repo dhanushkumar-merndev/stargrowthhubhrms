@@ -5,6 +5,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { shiftDaysLabel } from "@/lib/admin";
 import { ApiError, newOperationId, rpc } from "@/lib/api";
 import { dayLabel, todayIn } from "@/lib/attendance";
 import { fileError, shrinkPhoto, uploadFile } from "@/lib/files";
@@ -19,11 +20,6 @@ import { Art, Banner, Button, EmptyState, ErrorState, KeyValue, LoadingState, Pa
 
 const msg = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
 
-function weekdays(mask: number): string {
-  const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const on = names.filter((_, i) => mask & (1 << i));
-  return on.length === 7 ? "Every day" : on.join(", ") || "—";
-}
 const hhmm = (t: string | null | undefined) => (t ? t.slice(0, 5) : "—");
 
 /* ───────────────────────── Profile ───────────────────────── */
@@ -90,7 +86,7 @@ export function ProfileScreen({ now = new Date() }: { now?: Date }) {
           {p.manager && <KeyValue k="Reports to" v={p.manager.name} />}
           <KeyValue k="Office" v={p.office?.name ?? "Not assigned"} />
           <KeyValue k="Shift" v={p.shift ? `${p.shift.name} · ${hhmm(p.shift.start_local)}–${hhmm(p.shift.end_local)}` : "Not assigned"} />
-          {p.shift && <KeyValue k="Working days" v={weekdays(p.shift.weekly_mask)} />}
+          {p.shift && <KeyValue k="Working days" v={shiftDaysLabel(p.shift.weekly_mask)} />}
           <KeyValue k="Joined" v={p.join_date ? dayLabel(p.join_date) : "—"} />
           {p.business_email && <KeyValue k="Work email" v={p.business_email} />}
           {p.business_phone && <KeyValue k="Work phone" v={p.business_phone} />}

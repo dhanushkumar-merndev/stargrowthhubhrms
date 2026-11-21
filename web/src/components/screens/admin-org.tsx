@@ -11,13 +11,13 @@ import {
   type OrgSettings,
   type ShiftForm,
   MONTHS,
+  SATURDAY_INDEX,
   WEEKDAYS,
   bytesLabel,
   hm,
   hoursLabel,
   lines,
   maskDays,
-  maskLabel,
   officeArgs,
   officeErrors,
   orgErrors,
@@ -25,6 +25,7 @@ import {
   orgPatch,
   sameSet,
   shiftArgs,
+  shiftDaysLabel,
   shiftErrors,
   spanMinutes,
   storagePercent,
@@ -417,7 +418,7 @@ export function Shifts({ now = new Date() }: { now?: Date }) {
                 {cur ? (
                   <>
                     <KeyValue k="Hours" v={`${hm(cur.start_local)}–${hm(cur.end_local)} (${hoursLabel(spanMinutes(hm(cur.start_local), hm(cur.end_local)))})${cur.crosses_midnight ? " · overnight" : ""}`} />
-                    <KeyValue k="Days" v={maskLabel(cur.weekly_mask)} />
+                    <KeyValue k="Days" v={shiftDaysLabel(cur.weekly_mask)} />
                     <KeyValue k="Late after" v={`${cur.grace_seconds / 60} min grace`} />
                     {cur.lunch_start_local && <KeyValue k="Lunch" v={`${hm(cur.lunch_start_local)}–${hm(cur.lunch_end_local)}`} />}
                     {cur.checkout_extension_enabled && <KeyValue k="Checkout extension" v={hoursLabel(cur.checkout_extension_seconds / 60)} />}
@@ -429,7 +430,7 @@ export function Shifts({ now = new Date() }: { now?: Date }) {
                 {[...upcoming, ...drafts].map((v) => (
                   <div key={v.id} className="mt-2 flex items-center justify-between rounded-input bg-background px-3 py-2">
                     <span className="text-body-md">
-                      v{v.version_no} · {hm(v.start_local)}–{hm(v.end_local)} · {maskLabel(v.weekly_mask)} · from {dayLabel(v.effective_from)}
+                      v{v.version_no} · {hm(v.start_local)}–{hm(v.end_local)} · {shiftDaysLabel(v.weekly_mask)} · from {dayLabel(v.effective_from)}
                     </span>
                     {v.state === "draft" ? (
                       <Button
@@ -482,7 +483,7 @@ function ShiftSheet({ shift, from, today, onClose, onSaved }: { shift: Shift | n
     effective_from: v?.state === "draft" ? v.effective_from : today,
     start: hm(v?.start_local) || "09:30",
     end: hm(v?.end_local) || "18:30",
-    days: maskDays(v?.weekly_mask ?? 31),
+    days: maskDays((v?.weekly_mask ?? 31) | (1 << SATURDAY_INDEX)),
     grace_min: String((v?.grace_seconds ?? 900) / 60),
     lunch_start: hm(v?.lunch_start_local),
     lunch_end: hm(v?.lunch_end_local),
@@ -521,7 +522,7 @@ function ShiftSheet({ shift, from, today, onClose, onSaved }: { shift: Shift | n
       <fieldset>
         <legend className="mb-1.5 text-body-md font-medium text-text-secondary">Working days</legend>
         <div className="flex flex-wrap gap-2">
-          {WEEKDAYS.map((d, i) => (
+          {WEEKDAYS.map((d, i) => i === SATURDAY_INDEX ? null : (
             <label key={d} className={cx("cursor-pointer rounded-[20px] border px-3 py-2 text-body-md font-semibold", f.days[i] ? "border-primary bg-primary text-white" : "border-border bg-surface")}>
               <input
                 type="checkbox"
@@ -537,6 +538,7 @@ function ShiftSheet({ shift, from, today, onClose, onSaved }: { shift: Shift | n
             </label>
           ))}
         </div>
+        <p className="mt-1 text-body-sm text-text-secondary">Saturday follows the company’s Saturdays off setting.</p>
         {err("days") && <p className="mt-1 text-body-sm text-error">{err("days")}</p>}
       </fieldset>
       <TextField label="Grace before late (minutes)" inputMode="numeric" value={f.grace_min} onChange={(e) => set("grace_min")(e.target.value)} error={err("grace_min")} />

@@ -1,8 +1,6 @@
 -- [web-hrms] Ported from ~/Documents/Projects/September/HRMS/hrms/supabase/tests/database/13_saturday_off.sql
--- [web-hrms]   unchanged
-
 -- SAT-001..005: the company Saturday rule. Sunday stays the shift's weekly
--- off; ticked Saturdays (nth of the month) become weekly offs prospectively.
+-- off; ticked Saturdays (nth of the month) become weekly offs.
 begin;
 select test.standard_org();
 
@@ -11,11 +9,7 @@ select test.as_admin_db();
 create or replace function pg_temp.m() returns date language sql as $$
   select (date_trunc('month', current_date) + interval '2 months')::date;
 $$;
--- General shift works Mon–Sat from that month (published versions are immutable).
-insert into hrms.shift_versions (org_id, shift_id, version_no, effective_from, start_local, end_local, weekly_mask,
-  state, published_at)
-select org_id, shift_id, 2, pg_temp.m(), start_local, end_local, 63, 'published', now()
-from hrms.shift_versions where shift_id = (select id from hrms.shifts where name = 'General') and version_no = 1;
+-- Keep the standard fixture's Mon–Fri shift mask to cover older shifts.
 -- The nth Saturday of that month.
 create or replace function pg_temp.sat(n integer) returns date language sql as $$
   select pg_temp.m() + ((6 - extract(isodow from pg_temp.m())::integer + 7) % 7) + 7 * (n - 1);
@@ -77,5 +71,25 @@ select public.set_saturday_off_weeks(array[]::integer[]);
 select test.as_admin_db();
 select test.eq(pg_temp.kind('EMP01', pg_temp.sat(2)), 'workday', 'SAT-004 cleared: Saturdays work again');
 select test.eq(pg_temp.kind('EMP01', pg_temp.sat(2) + 1), 'weekly_off', 'SAT-004 Sunday still off');
+
+-- Advance the org's date to the 1st Saturday, with that schedule already generated.
+create or replace function hrms.org_today(p_org uuid) returns date
+language sql stable set search_path = '' as $$
+  select case when code = 'TEST_ORG' then pg_temp.sat(1) else (now() at time zone timezone)::date end
+  from hrms.organizations where id = p_org;
+$$;
+select test.login('EMP01');
+select test.eq(public.get_home_summary() -> 'data' -> 'shift' ->> 'kind', 'workday',
+  'SAT-006 Home shows a working Saturday with no weeks selected');
+select test.login('ADMIN01');
+select public.set_saturday_off_weeks(array[1]);
+select test.login('EMP01');
+select test.eq(public.get_home_summary() -> 'data' -> 'shift' ->> 'blocked_reason', 'weekly_off',
+  'SAT-006 Home shows the selected Saturday as off');
+select test.login('ADMIN01');
+select public.set_saturday_off_weeks(array[]::integer[]);
+select test.login('EMP01');
+select test.eq(public.get_home_summary() -> 'data' -> 'shift' ->> 'is_required', 'true',
+  'SAT-006 Home shows a working Saturday again after clearing the policy');
 
 rollback;

@@ -4,6 +4,7 @@
 // Pure functions; SQL checks everything again.
 
 export const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+export const SATURDAY_INDEX = WEEKDAYS.indexOf("Sat");
 
 /** Bit 0 = Monday … bit 6 = Sunday (31 = Mon–Fri). */
 export function maskDays(mask: number): boolean[] {
@@ -18,6 +19,12 @@ export function maskLabel(mask: number): string {
   if (mask === 31) return "Mon–Fri";
   if (mask === 63) return "Mon–Sat";
   return on.join(", ") || "No days";
+}
+
+export function shiftDaysLabel(mask: number): string {
+  const days = mask & ~(1 << SATURDAY_INDEX);
+  const saturday = "Sat follows company policy";
+  return days ? `${maskLabel(days)} · ${saturday}` : saturday;
 }
 
 /** "10:00:00" → "10:00"; "" stays "". */

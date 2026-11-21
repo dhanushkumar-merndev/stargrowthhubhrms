@@ -5,6 +5,8 @@
 -- machine, called as the actual API role with Supabase-style JWT claims.
 begin;
 select test.standard_org();
+-- This suite uses a five-day workweek for its leave-unit assertions.
+update hrms.organizations set saturday_off_weeks = 31 where code = 'TEST_ORG';
 
 -- Dates relative to today so the suite runs on any day: the Monday of the
 -- week after next, always in the future and a working day.
@@ -289,6 +291,7 @@ select test.ok((select jsonb_array_length(public.list_review_queue() -> 'data') 
 
 -- ============================================================ LEAVE-006 cross-year atomicity
 select test.as_admin_db();
+update hrms.organizations set saturday_off_weeks = 0 where code = 'TEST_ORG';
 insert into hrms.shifts (org_id, name) values (test.org('TEST_ORG'), 'Everyday');
 insert into hrms.shift_versions (org_id, shift_id, version_no, effective_from, start_local, end_local, weekly_mask, state, published_at)
 select test.org('TEST_ORG'), id, 1, date '2025-01-01', time '10:00', time '19:00', 127, 'published', now()

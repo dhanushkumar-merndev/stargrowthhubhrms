@@ -109,7 +109,9 @@ select hrms.ensure_schedule_instances(test.org('TEST_ORG'), array[test.emp('EMP0
 select test.eq((select kind from hrms.work_schedule_instances where employee_id = test.emp('EMP01') and shift_date = date '2026-10-02'),
   'holiday', 'published holiday 2 Oct is not a working day');
 select test.eq((select kind from hrms.work_schedule_instances where employee_id = test.emp('EMP01') and shift_date = date '2026-10-03'),
-  'weekly_off', 'Saturday is weekly off');
+  'workday', 'Saturday works with the company rule disabled');
+select test.eq((select kind from hrms.work_schedule_instances where employee_id = test.emp('EMP01') and shift_date = date '2026-10-04'),
+  'weekly_off', 'Sunday is weekly off');
 select test.eq((select start_at from hrms.work_schedule_instances where employee_id = test.emp('EMP01') and shift_date = date '2026-09-28'),
   timestamptz '2026-09-28 10:00+05:30', 'start in office time zone');
 select test.eq((select half_split_at from hrms.work_schedule_instances where employee_id = test.emp('EMP01') and shift_date = date '2026-09-28'),
@@ -117,8 +119,8 @@ select test.eq((select half_split_at from hrms.work_schedule_instances where emp
 select test.eq((select expected_seconds from hrms.work_schedule_instances where employee_id = test.emp('EMP01') and shift_date = date '2026-09-28'),
   32400, 'expected 32,400 s including paid lunch');
 select test.eq((select count(*)::integer from hrms.work_schedule_instances where employee_id = test.emp('EMP01')
-                and shift_date between date '2026-09-28' and date '2026-10-04' and is_required), 4,
-  'Mon–Fri minus holiday = 4 required days');
+                and shift_date between date '2026-09-28' and date '2026-10-04' and is_required), 5,
+  'Mon–Sat minus holiday = 5 required days');
 -- Idempotent: running again creates nothing new and changes nothing.
 select hrms.ensure_schedule_instances(test.org('TEST_ORG'), array[test.emp('EMP01')], date '2026-09-28', date '2026-10-04');
 select test.eq((select count(*)::integer from hrms.work_schedule_instances where employee_id = test.emp('EMP01')), 7,

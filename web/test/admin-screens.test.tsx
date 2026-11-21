@@ -76,7 +76,7 @@ describe("Shifts", () => {
     const calls = mockFetch({ ...session(), "/rpc/list_shifts": () => ok([{ id: "s1", name: "General", active: true, assigned_count: 5, versions: [v({}), v({ id: "v2", version_no: 2, state: "draft", effective_from: "2026-12-01", start_local: "10:00:00", end_local: "19:00:00" })] }]), "/rpc/publish_shift_version": () => ok({}) });
     wrap(<Shifts now={NOW} />);
     expect(await screen.findByText(/09:30–18:30 \(9h\)/)).toBeInTheDocument();
-    expect(screen.getByText("Mon–Fri")).toBeInTheDocument();
+    expect(screen.getByText("Mon–Fri · Sat follows company policy")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Publish" }));
     await waitFor(() => expect(calls.find((c) => c.path === "/rpc/publish_shift_version")?.body).toEqual({ p_version_id: "v2" }));
     expect(await screen.findByText(/General v2 published/)).toBeInTheDocument();

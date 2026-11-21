@@ -36,7 +36,7 @@ describe("My profile", () => {
     mockFetch({ ...session(), "/rpc/get_my_profile": () => ok(profile()) });
     wrap(<ProfileScreen now={NOW} />);
     expect(await screen.findByText("Bengaluru HQ")).toBeInTheDocument();
-    expect(screen.getByText("Mon, Tue, Wed, Thu, Fri")).toBeInTheDocument();
+    expect(screen.getByText("Mon–Fri · Sat follows company policy")).toBeInTheDocument();
     expect(screen.getByText("General · 10:00–19:00")).toBeInTheDocument();
     expect(screen.getByText("Visible only to you, HR and Admin.")).toBeInTheDocument();
     expect(screen.getByText("Ask HR or Admin to change your work details.")).toBeInTheDocument();

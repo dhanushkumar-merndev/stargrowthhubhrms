@@ -8,6 +8,7 @@
 
 set local session_replication_role = replica;
 -- General 10:00-19:00, 30 min grace, Mon-Fri; Intern 14:00-19:00, 30 min grace.
+update hrms.organizations set saturday_off_weeks = 31 where id = :org;
 insert into hrms.shifts (id, org_id, name) values
   ('00000000-0000-4000-8000-00000000f001', :org, 'General (test)'),
   ('00000000-0000-4000-8000-00000000f002', :org, 'Intern (test)');

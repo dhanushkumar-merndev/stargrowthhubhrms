@@ -6,6 +6,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useSWRConfig } from "swr";
 import { rpc } from "@/lib/api";
 import {
   type AuditRow,
@@ -357,7 +358,7 @@ function HolidayPanel({ year: thisYear, today }: { year: number; today: string }
           onClose={() => setWeekly(false)}
           onSaved={async () => {
             setWeekly(false);
-            setNotice("Weekly off updated. Future schedules are refreshed.");
+            setNotice("Saturday schedule updated.");
             await q.mutate();
           }}
         />
@@ -396,6 +397,7 @@ function HolidaySheet({ holiday, year, today, offices, onClose, onSaved }: { hol
 
 function WeeklyOffSheet({ mask, onClose, onSaved }: { mask: number } & Saved) {
   const [weeks, setWeeks] = useState(satWeeks(mask));
+  const { mutate } = useSWRConfig();
   const a = useAction();
   return (
     <SheetForm
@@ -407,11 +409,12 @@ function WeeklyOffSheet({ mask, onClose, onSaved }: { mask: number } & Saved) {
       onSubmit={() =>
         a.run(async () => {
           await rpc("set_saturday_off_weeks", { p_weeks: weeks });
+          await mutate(["get_home_summary", {}], undefined);
           await onSaved();
         }, "Could not save.")
       }
     >
-      <p className="text-body-md text-text-secondary">Pick which Saturdays of each month are off. Shifts that include Saturday skip those days.</p>
+      <p className="text-body-md text-text-secondary">Pick which Saturdays of each month are days off for the company.</p>
       {[1, 2, 3, 4, 5].map((w) => (
         <Toggle key={w} label={`${ORDINAL[w - 1]} Saturday`} checked={weeks.includes(w)} onChange={(on) => setWeeks(on ? [...weeks, w].sort() : weeks.filter((x) => x !== w))} />
       ))}
